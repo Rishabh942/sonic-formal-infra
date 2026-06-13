@@ -33,27 +33,26 @@ echo "output:                       $OUTPUT_FILE"
 echo "log:                          $LOG_FILE"
 echo
 
-# Invoke crosshair via python3 -c (instead of the `crosshair` CLI) so we can
-# bump sys.setrecursionlimit first. CrossHair's pytest emitter recurses
-# through an AbcChain when collecting imports, and large iteration counts
-# trip the default limit (RecursionError in path_cover.py). The bump is
-# defensive — arg_dictionary doesn't hit that specific path today, but the
-# guard costs nothing and keeps the script robust if you switch formats.
-PYTHONPATH=".:lib" python3 -c "
+# Using a Heredoc (<< 'EOF') allows us to cleanly write Python code 
+# without breaking Bash string quoting limits or messing up indentations.
+PYTHONPATH=".:lib" python3 << 'EOF' > "$OUTPUT_FILE" 2> "$LOG_FILE"
 import sys
 sys.setrecursionlimit(50000)
 from crosshair.main import main
+
+# Reconstruct sys.argv manually from environment variables passed by Bash
+import os
 sys.argv = [
     'crosshair', 'cover',
     '--example_output_format', 'arg_dictionary',
-    '--coverage_type', '$COVERAGE_TYPE',
-    '--per_condition_timeout', '$PER_CONDITION_TIMEOUT',
-    '--per_path_timeout', '$PER_PATH_TIMEOUT',
-    '--max_uninteresting_iterations', '$MAX_UNINTERESTING_ITERATIONS',
-    '$TARGET',
+    '--coverage_type', os.environ.get('COVERAGE_TYPE', 'path'),
+    '--per_condition_timeout', os.environ.get('PER_CONDITION_TIMEOUT', '120'),
+    '--per_path_timeout', os.environ.get('PER_PATH_TIMEOUT', '30'),
+    '--max_uninteresting_iterations', os.environ.get('MAX_UNINTERESTING_ITERATIONS', '1000'),
+    'bgpd_nexthop_mgmt.crosshair_target.api_bgp_nh_update_with_precondition',
 ]
 sys.exit(main())
-" > "$OUTPUT_FILE" 2> "$LOG_FILE"
+EOF
 
 LINES=$(wc -l < "$OUTPUT_FILE" | tr -d ' ')
 DISTINCT=$(sort -u "$OUTPUT_FILE" | wc -l | tr -d ' ')

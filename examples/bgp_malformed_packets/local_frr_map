@@ -1,0 +1,63 @@
+// FRR BGP Internals
+digraph {
+	rankdir=LR ratio=fill size="12,12" splines=true
+	node [fontname=Helvetica fontsize=11 shape=box style=filled]
+	subgraph cluster_0 {
+		color=blue fontname="Helvetica-Bold" label="bgp_evpn.c" style=dashed
+		bgp_nlri_parse_evpn [label=bgp_nlri_parse_evpn color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+	}
+	subgraph cluster_1 {
+		color=blue fontname="Helvetica-Bold" label="bgp_zebra.c" style=dashed
+		bgp_read_fec_update [label=bgp_read_fec_update color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+	}
+	subgraph cluster_2 {
+		color=blue fontname="Helvetica-Bold" label="bgp_vty.c" style=dashed
+		bgp_vty_init [label=bgp_vty_init color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+	}
+	subgraph cluster_3 {
+		color=blue fontname="Helvetica-Bold" label="bgp_fsm.c" style=dashed
+		bgp_event_stop_with_notify [label=bgp_event_stop_with_notify color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+		bgp_event_update [label=bgp_event_update color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+		bgp_fsm_change_status [label=bgp_fsm_change_status color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+		bgp_event [label=bgp_event color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+	}
+	subgraph cluster_4 {
+		color=blue fontname="Helvetica-Bold" label="bgp_label.c" style=dashed
+		bgp_nlri_parse_label [label=bgp_nlri_parse_label color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+	}
+	subgraph cluster_5 {
+		color=blue fontname="Helvetica-Bold" label="bgp_packet.c" style=dashed
+		bgp_process_packet [label=bgp_process_packet color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+		bgp_update_receive_eor [label=bgp_update_receive_eor color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+		bgp_update_receive [label=bgp_update_receive color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+		bgp_open_receive [label=bgp_open_receive color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+		bgp_nlri_parse [label=bgp_nlri_parse color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+		bgp_keepalive_receive [label=bgp_keepalive_receive color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+	}
+	subgraph cluster_6 {
+		color=blue fontname="Helvetica-Bold" label="bgp_flowspec.c" style=dashed
+		bgp_nlri_parse_flowspec [label=bgp_nlri_parse_flowspec color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+	}
+	subgraph cluster_7 {
+		color=blue fontname="Helvetica-Bold" label="bgp_io.c" style=dashed
+		bgp_read [label=bgp_read color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+		bgp_reads_on [label=bgp_reads_on color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+		bgp_reads_off [label=bgp_reads_off color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+	}
+	subgraph cluster_8 {
+		color=blue fontname="Helvetica-Bold" label="bgp_route.c" style=dashed
+		bgp_nlri_parse_ip [label=bgp_nlri_parse_ip color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+	}
+	subgraph cluster_9 {
+		color=blue fontname="Helvetica-Bold" label="bgp_mplsvpn.c" style=dashed
+		bgp_nlri_parse_vpn [label=bgp_nlri_parse_vpn color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+	}
+	subgraph cluster_10 {
+		color=blue fontname="Helvetica-Bold" label="bgp_ls.c" style=dashed
+		bgp_nlri_parse_ls [label=bgp_nlri_parse_ls color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+	}
+	subgraph cluster_11 {
+		color=blue fontname="Helvetica-Bold" label="bgp_attr.c" style=dashed
+		bgp_attr_parse [label=bgp_attr_parse color="#FF4500" fillcolor="#FFA07A" penwidth=2]
+	}
+}
