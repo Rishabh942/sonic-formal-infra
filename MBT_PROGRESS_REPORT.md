@@ -28,7 +28,7 @@ The test runner was executed against the live FRR instance with the following to
 A deep dive was performed to analyze the constraint sequences for all 118 cases flagged as `POTENTIAL_RFC_BUG`. We discovered that **100%** of these failures trace back to the exact same architectural deviation by FRR:
 
 * **The Fuzzer's Action:** Across all 118 sequences, the fuzzer establishes a TCP connection and immediately transmits a BGP `UPDATE` or `KEEPALIVE` packet *before* successfully negotiating the session via a BGP `OPEN` handshake.
-* **Formal Model Expectation (RFC 4271):** The strict formal model anticipates a Finite State Machine (FSM) violation. It expects FRR to immediately generate an FSM Error `NOTIFICATION` message and forcefully tear down the TCP socket.
+* **Formal Model Expectation (RFC 4271 & 7606):** The strict formal model anticipates a Finite State Machine (FSM) violation. It expects FRR to immediately generate an FSM Error `NOTIFICATION` message and forcefully tear down the TCP socket. (Note: While RFC 7606 introduces "treat-as-withdraw" to avoid tearing down sessions on malformed packets, it only applies to fully *Established* sessions. For pre-handshake packets, 7606 falls back to the strict 4271 teardown mandate).
 * **Actual FRR Behavior:** FRR receives the invalid payload, logs the FSM error internally, but intentionally **silently drops the packet** and leaves the TCP connection open.
 
 ### Conclusion on FRR Behavior
