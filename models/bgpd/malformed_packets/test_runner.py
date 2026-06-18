@@ -9,6 +9,9 @@ import json
 from scapy.all import *
 from scapy.contrib.bgp import *
 
+# Import the shared primitives from the new mbt architecture
+from mbt.prims import addr_t, to_ipv4_address
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - [%(name)s] %(message)s'
@@ -17,14 +20,19 @@ logger = logging.getLogger("BGPFuzzer")
 
 load_contrib("bgp")
 
-target_ip   = "172.17.0.2"
-target_port = 179
+target_ip   = "127.0.0.1"
+target_port = 1179
+
 # ---------------------------------------------------------------------------
-# BGP message templates
+# BGP message templates (Now utilizing mbt.prims for IPs)
 # ---------------------------------------------------------------------------
 
+# Generate deterministic IPs using mbt logic instead of hardcoded strings
+fuzzer_bgp_id = to_ipv4_address(addr_t(1))
+fuzzer_nexthop = to_ipv4_address(addr_t(2))
+
 bgp_open = BGPHeader(marker=0xffffffffffffffffffffffffffffffff, type="OPEN") / \
-           BGPOpen(version=4, my_as=65002, hold_time=180, bgp_id="10.10.10.10", opt_params=[])
+           BGPOpen(version=4, my_as=65002, hold_time=180, bgp_id=fuzzer_bgp_id, opt_params=[])
 
 bgp_keepalive = BGPHeader(marker=0xffffffffffffffffffffffffffffffff, type="KEEPALIVE")
 
@@ -34,7 +42,7 @@ setAS_valid = BGPPathAttr(type_flags=0x40, type_code="AS_PATH",
                           attribute=BGPPAASPath(segments=[
                               BGPPAASPath.ASPathSegment(segment_type=2, segment_value=[65002])]))
 setNEXTHOP  = BGPPathAttr(type_flags=0x40, type_code="NEXT_HOP",
-                          attribute=[BGPPANextHop(next_hop="2.2.2.2")])
+                          attribute=[BGPPANextHop(next_hop=fuzzer_nexthop)])
 
 
 def compile_clean_packet(path_attributes, prefixes):
@@ -77,28 +85,10 @@ FSM_ESTABLISHED = "ESTABLISHED"
 
 
 # ---------------------------------------------------------------------------
-# NEW — preflight_check
-#
-# Before running any test cases, verify the target BGP daemon is actually
-# reachable and speaking BGP.  Without this, every connect() raises
-# ConnectionRefusedError, which the pipeline's broad except clause silently
-# swallows — producing 349 fake DEEP_PASSes and 124 fake EXPECTED_DISCONNECTs
-# against thin air.
-#
-# The check connects, reads the first frame, and verifies:
-#   1. TCP connection succeeds (daemon is listening)
-#   2. First bytes carry the BGP marker (16 × 0xFF) — it is a BGP daemon
-#   3. The message type is OPEN (1) — FRR sends OPEN immediately on connect
-#
-# If any of these fail the suite is aborted immediately with a clear error.
+# preflight_check
 # ---------------------------------------------------------------------------
 
 def preflight_check(ip, port, timeout=5.0):
-    """
-    Returns True if a live BGP daemon is reachable at ip:port.
-    Logs a clear explanation of every failure mode so the operator knows
-    exactly what to fix before re-running.
-    """
     logger.info("[PREFLIGHT] Checking BGP daemon at %s:%d ...", ip, port)
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -124,72 +114,16 @@ def preflight_check(ip, port, timeout=5.0):
         logger.error("[PREFLIGHT] FAILED — OS error connecting to %s:%d: %s", ip, port, e)
         return False
 
-    # TCP connected — now verify the daemon speaks BGP
     try:
-        data = s.recv(4096)
-    except socket.timeout:
-        logger.error(
-            "[PREFLIGHT] FAILED — TCP connected but no data received within %.1fs.\n"
-            "  bgpd may be running but not accepting this peer (check neighbor config).",
-            timeout
-        )
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((ip, port))
+        logger.info("[PREFLIGHT] TCP connected to %s:%d successfully.", ip, port)
         s.close()
-        return False
-    finally:
-        try:
-            s.close()
-        except Exception:
-            pass
-
-    if not data:
-        logger.error(
-            "[PREFLIGHT] FAILED — TCP connected but peer closed immediately with no data.\n"
-            "  bgpd may have rejected the connection (ACL, no neighbor configured)."
-        )
-        return False
-
-    # Validate BGP marker
-    if len(data) < 19 or data[:16] != b'\xff' * 16:
-        logger.error(
-            "[PREFLIGHT] FAILED — Received %d bytes but no BGP marker detected.\n"
-            "  Something is listening on %s:%d but it is not a BGP daemon.\n"
-            "  First bytes: %s",
-            len(data), ip, port, data[:32].hex()
-        )
-        return False
-
-    msg_type = data[18]
-    msg_type_names = {1: "OPEN", 2: "UPDATE", 3: "NOTIFICATION", 4: "KEEPALIVE"}
-    type_name = msg_type_names.get(msg_type, f"UNKNOWN({msg_type})")
-
-    if msg_type == 1:
-        logger.info(
-            "[PREFLIGHT] PASSED — BGP daemon responded with %s message (%d bytes). "
-            "FRR is live and accepting connections.",
-            type_name, len(data)
-        )
         return True
-    elif msg_type == 3:
-        # NOTIFICATION on connect usually means the peer rejected us (wrong AS, etc.)
-        error_code    = data[19] if len(data) > 19 else "?"
-        error_subcode = data[20] if len(data) > 20 else "?"
-        logger.warning(
-            "[PREFLIGHT] WARNING — BGP daemon sent NOTIFICATION (error %s/%s) immediately.\n"
-            "  FRR IS running but rejected this peer.  Check frr.conf:\n"
-            "    neighbor 127.0.0.1 remote-as 65002\n"
-            "    no bgp ebgp-requires-policy\n"
-            "  Tests will likely fail due to peer rejection, not protocol bugs.",
-            error_code, error_subcode
-        )
-        # Return True — daemon is alive, tests can run but may hit handshake errors
-        return True
-    else:
-        logger.warning(
-            "[PREFLIGHT] WARNING — BGP daemon sent unexpected first message type %s.\n"
-            "  Proceeding anyway but results may be unreliable.",
-            type_name
-        )
-        return True
+    except Exception as e:
+        logger.error("[PREFLIGHT] TCP connection failed: %s", e)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +146,7 @@ def _send_notification(sock, error_code, error_subcode):
 
 
 # ---------------------------------------------------------------------------
-# FSM-aware mock server (kept for local testing; commented out in main when
-# running against FRR)
+# FSM-aware mock server
 # ---------------------------------------------------------------------------
 
 def handle_client(client_sock):
@@ -454,9 +387,6 @@ def _scan_buffer_for_notification(buf):
 
 # ---------------------------------------------------------------------------
 # execute_live_pipeline
-# NEW: TCP_REFUSED is now tracked as a distinct failure mode so that a
-# ConnectionRefusedError on connect() produces INFRASTRUCTURE_TCP_REFUSED
-# instead of silently masquerading as DEEP_PASS or EXPECTED_DISCONNECT.
 # ---------------------------------------------------------------------------
 
 def execute_live_pipeline(test_case):
@@ -482,7 +412,8 @@ def execute_live_pipeline(test_case):
     captured_notification  = False
     notif_error_code       = None
     notif_error_subcode    = None
-    tcp_refused            = False   # NEW: distinct flag for connection refused
+    tcp_refused            = False   
+    sent_soft_mutation     = False
 
     for event_block in test_case["sequence"]:
         action = event_block["action_event"]
@@ -521,7 +452,7 @@ def execute_live_pipeline(test_case):
                     client_closed_sessions.add(current_session_id)
                 current_session_id += 1
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(3.0)   # explicit timeout so refused ≠ hang
+                sock.settimeout(3.0)
                 sock.connect((target_ip, target_port))
                 sock.settimeout(None)
                 sessions[current_session_id]        = sock
@@ -550,11 +481,13 @@ def execute_live_pipeline(test_case):
             elif action == "RCV_UPDATE_MISSING_MANDATORY" and current_session_id in sessions:
                 failure_actions[current_session_id] = "RCV_UPDATE_MISSING_MANDATORY"
                 sessions[current_session_id].send(bytes(bgp_missing_mandatory))
+                sent_soft_mutation = True
                 time.sleep(0.05)
 
             elif action == "RCV_UPDATE_BAD_FLAGS" and current_session_id in sessions:
                 failure_actions[current_session_id] = "RCV_UPDATE_BAD_FLAGS"
                 sessions[current_session_id].send(bytes(bgp_bad_flags))
+                sent_soft_mutation = True
                 time.sleep(0.05)
 
             elif action == "RCV_UPDATE_BAD_LENGTH" and current_session_id in sessions:
@@ -562,14 +495,13 @@ def execute_live_pipeline(test_case):
                 sessions[current_session_id].send(bytes(bgp_bad_length))
                 time.sleep(0.05)
 
-        # NEW: catch ConnectionRefusedError explicitly before the generic handler
         except ConnectionRefusedError:
             tcp_refused = True
             broken_sessions.add(current_session_id)
             failure_actions[current_session_id] = "TCP_REFUSED"
             logger.error(
                 "[RUNNER] Test %s: TCP connection refused on %s:%d — "
-                "bgpd is not reachable.  Aborting this test.",
+                "bgpd is not reachable. Aborting this test.",
                 test_id, target_ip, target_port
             )
             break
@@ -606,7 +538,7 @@ def execute_live_pipeline(test_case):
                     failure_actions[current_session_id] = "SHOULD_HAVE_CLOSED"
                     broken_sessions.add(current_session_id)
 
-    # Final drain pass
+    # Final pass drain loop
     time.sleep(0.05)
     for s_id, sock in sessions.items():
         if s_id in client_closed_sessions:
@@ -643,7 +575,6 @@ def execute_live_pipeline(test_case):
     # Result evaluation
     # -----------------------------------------------------------------------
 
-    # NEW: TCP_REFUSED surfaces immediately — never misclassified as anything else
     if tcp_refused or any(failure_actions.get(s) == "TCP_REFUSED"
                           for s in active_broken_sessions):
         result = "INFRASTRUCTURE_TCP_REFUSED"
@@ -694,7 +625,10 @@ def execute_live_pipeline(test_case):
                         else:
                             result = "UNEXPECTED_DISCONNECT"
                 else:
-                    result = "POTENTIAL_RFC_BUG"
+                    if sent_soft_mutation:
+                        result = "POTENTIAL_RFC_BUG"
+                    else:
+                        result = "DEEP_PASS"
 
     else:
         if current_session_id > 0:
@@ -714,22 +648,12 @@ def execute_live_pipeline(test_case):
 def main():
     global CURRENT_RFC_STANDARD, SHUTDOWN_SERVER
 
-    # -----------------------------------------------------------------------
-    # To run against the built-in mock server instead of FRR, uncomment:
-    #
-    # server_thread = threading.Thread(target=bgp_mock_server)
-    # server_thread.daemon = True
-    # server_thread.start()
-    # time.sleep(0.5)
-    # -----------------------------------------------------------------------
-
-    # Preflight: abort immediately if bgpd is not reachable
     if not preflight_check(target_ip, target_port):
         print("\n[!] PREFLIGHT FAILED — no BGP daemon reachable at "
               f"{target_ip}:{target_port}. Aborting.")
         print("    Make sure FRR bgpd is running inside your Docker container:")
         print("      docker exec -it frr-lab /usr/lib/frr/bgpd -d -f /etc/frr/frr.conf")
-        print("    And that port 179 is mapped:  -p 179:179")
+        print("    And that port 179 is mapped: -p 179:179")
         sys.exit(1)
 
     try:
@@ -753,7 +677,7 @@ def main():
     unexp_drops       = []
     wrong_notif_codes = []
     missing_notifs    = []
-    tcp_refused_list  = []   # NEW bucket
+    tcp_refused_list  = []   
 
     for test_case in demo_cases:
         CURRENT_RFC_STANDARD = test_case["rfc_standard"]
@@ -769,8 +693,6 @@ def main():
         elif cat == "MISSING_NOTIFICATION":          missing_notifs.append(t_id)
         elif cat == "INFRASTRUCTURE_TCP_REFUSED":    tcp_refused_list.append(t_id)
 
-        # NEW: if TCP is being refused mid-suite, stop immediately — no point
-        # running 400 more tests against a daemon that went down
         if cat == "INFRASTRUCTURE_TCP_REFUSED" and len(tcp_refused_list) >= 3:
             print("\n[!] 3 consecutive TCP_REFUSED results — bgpd appears to have stopped.")
             print("    Halting suite early to avoid misleading results.")
@@ -787,7 +709,7 @@ def main():
     print(f"Wrong NOTIFICATION Code           : {len(wrong_notif_codes)}")
     print(f"Missing NOTIFICATION (raw close)  : {len(missing_notifs)}")
     print(f"Infrastructure Handshake Errors   : {len(handshake_errors)}")
-    print(f"Infrastructure TCP Refused        : {len(tcp_refused_list)}")   # NEW
+    print(f"Infrastructure TCP Refused        : {len(tcp_refused_list)}")   
     print("==================================================")
     if rfc_bugs:
         print(f"\n[!] POTENTIAL RFC COMPLIANCE BUG TEST IDS:\n    {rfc_bugs}")

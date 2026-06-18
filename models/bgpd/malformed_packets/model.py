@@ -8,6 +8,9 @@ and generate test sequences.
 from dataclasses import dataclass
 from enum import IntEnum
 
+# Import shared primitives from the new mbt architecture
+from mbt.prims import addr_t, uint32_t, to_ipv4_address
+
 class BState(IntEnum):
     IDLE = 0
     CONNECT = 1
@@ -30,6 +33,14 @@ class RFCStandard(IntEnum):
 @dataclass
 class BGPState:
     fsm_state: BState = BState.IDLE
+    
+    # Store peer configuration using formal mbt types
+    local_as: uint32_t = uint32_t(65002)
+    peer_id: addr_t = addr_t(1)
+
+    def get_deterministic_peer_ip(self) -> str:
+        """Leverages mbt.prims to generate a stable test IP."""
+        return to_ipv4_address(self.peer_id)
 
     def transition(self, event: BEvent, rfc: RFCStandard) -> tuple[BState, str]:
         """Execute a single FSM state transition.

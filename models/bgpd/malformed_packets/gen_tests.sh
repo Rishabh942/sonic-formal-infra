@@ -6,8 +6,8 @@
 
 set -euo pipefail
 
-TARGET="bgp_malformed_packets.crosshair_target.execute_bgp_sequence"
-OUTPUT_DIR="bgp_malformed_packets/tests"
+TARGET="models.bgpd.malformed_packets.crosshair_target.execute_bgp_sequence"
+OUTPUT_DIR="models/bgpd/malformed_packets/tests"
 OUTPUT_FILE="$OUTPUT_DIR/bgp_argdict.txt"
 LOG_FILE="$OUTPUT_DIR/crosshair.log"
 

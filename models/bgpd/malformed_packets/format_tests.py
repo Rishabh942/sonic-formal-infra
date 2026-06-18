@@ -16,7 +16,7 @@ _EXAMPLES = os.path.dirname(_HERE)                       # examples/
 sys.path.insert(0, os.path.join(_EXAMPLES, "lib"))
 sys.path.insert(0, _EXAMPLES)
 
-from bgp_malformed_packets.api_bgp_malformed import BGPState, BState, BEvent, RFCStandard
+from models.bgpd.malformed_packets.model import BGPState, BState, BEvent, RFCStandard
 
 DEFAULT_INPUT = os.path.join(_HERE, "tests", "bgp_argdict.txt")
 DEFAULT_OUTPUT = os.path.join(_HERE, "tests", "bgp_test_suite_formatted.json")
