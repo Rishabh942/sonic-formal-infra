@@ -13,10 +13,17 @@ replay them against the real C implementation to check conformance.
 A model captures the **State**, **Transition**, and **Precondition**.
 See [`examples/bgpd_nexthop_mgmt`](examples/bgpd_nexthop_mgmt/README.md) for an example (FRR `bgpd` nexthop tracking).
 
-This project provides a common library to facilitate writing formal models
-and systematically generating tests for SONiC components.
-In addition, it hosts formal models of various modules and network features
-within the SONiC ecosystem.
+## Scope
+
+This project provides a common library to facilitate writing formal models and
+systematically generating tests for SONiC components. In addition, it hosts formal
+models of various modules and network features within the SONiC ecosystem.
+
+Currently, the repository focuses on two categories of contributions:
+
+1. Modeling libraries and languages tailored for the networking domain.
+2. Models and derived tests for specific features of SONiC components: the model
+   code, generated cases, and the driver code needed to execute them.
 
 ## Repository layout
 
@@ -26,9 +33,9 @@ Run everything from the repo root: it is the single import root, so a model's
 ```
 sonic-formal-infra/
 ├── mbt/                        # shared library — the one common package models import
-│   └── prims.py                #   model-writing primitives (types, render, predicates, collections)
+│   └── modeling_primitives.py  #   types, render, predicates, collections
 ├── models/                     # real, focused models — one slice of behavior each
-│   └── <module>/<feature>/     #   module dir is a namespace (e.g. bgpd/nexthop_mgmt)
+│   └── <module>/<feature>/     #   suggested shape, not a fixed template (see below)
 │       ├── model.py            #     State / Transition / Precondition
 │       ├── generated/          #     committed test-cases
 │       └── test_driver/        #     C++ harness to drive the real implementation
@@ -40,7 +47,10 @@ sonic-formal-infra/
 - `mbt/` holds the model-writing primitives. It may include utility code for test
   generation and execution in the future.
 - `models/` is where real models live, one `<module>/<feature>` slice each — empty
-  for now.
+  for now. The `<module>/<feature>/` tree above is a **suggestion**, not a strict
+  template: the only convention is that a model is a focused slice of behavior under
+  `models/`. Name and arrange a model's internals (files, sub-dirs, drivers) however
+  fits it best.
 
 Planned: `interactions/` for P models composing interacting models into call sequences.
 
