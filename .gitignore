@@ -1,0 +1,23 @@
+# Python Caching
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Fuzzer Output & Logs
+parity_report.json
+*.log
+
+# Crosshair Output & Logs
+attr_argdict.txt
+attr_crosshair.log
+.crosshair/
+
+# Virtual Environments
+venv/
+.env/
+
+# Editor/OS specifics
+.vscode/
+.idea/
+.DS_Store

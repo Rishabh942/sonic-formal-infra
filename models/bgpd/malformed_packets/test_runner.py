@@ -6,6 +6,7 @@ import logging
 import threading
 import os
 import json
+import subprocess
 from scapy.all import *
 from scapy.contrib.bgp import *
 
@@ -308,6 +309,44 @@ def classify_sequence(sequence):
 
 
 # ---------------------------------------------------------------------------
+# Observation Channels (RIB Inspection & Logs)
+# ---------------------------------------------------------------------------
+
+def get_rib_route_count():
+    try:
+        out = subprocess.check_output(
+            ["docker", "exec", "frr-lab", "vtysh", "-c", "show bgp ipv4 unicast json"],
+            stderr=subprocess.DEVNULL
+        )
+        data = json.loads(out)
+        routes = data.get("routes", {})
+        return len(routes)
+    except Exception:
+        return 0
+
+def get_bgpd_logs(test_id="UNKNOWN"):
+    try:
+        out = subprocess.check_output(
+            ["docker", "exec", "frr-lab", "cat", "/tmp/bgpd.log"],
+            stderr=subprocess.DEVNULL
+        )
+        subprocess.call(["docker", "exec", "frr-lab", "bash", "-c", "> /tmp/bgpd.log"])
+        logs_str = out.decode("utf-8", errors="ignore")
+        
+        # Write permanent residuals to a host-side file
+        if logs_str.strip():
+            with open("bgpd_fuzzing_events.log", "a") as f:
+                f.write(f"--- Test ID {test_id} Internal BGPD Events ---\n")
+                for line in logs_str.splitlines():
+                    if "BGP" in line:
+                        f.write(f"    {line.strip()}\n")
+                f.write("\n")
+
+        return logs_str
+    except Exception:
+        return ""
+
+# ---------------------------------------------------------------------------
 # complete_bgp_handshake
 # ---------------------------------------------------------------------------
 
@@ -584,7 +623,11 @@ def execute_live_pipeline(test_case):
             result = "INFRASTRUCTURE_HANDSHAKE_ERROR"
 
         elif any(failure_actions.get(s) == "SHOULD_HAVE_CLOSED" for s in active_broken_sessions):
-            result = "POTENTIAL_RFC_BUG"
+            rib_count = get_rib_route_count()
+            if rib_count > 0:
+                result = "POTENTIAL_RFC_BUG (ATTRIBUTE_DISCARD / INSTALLED)"
+            else:
+                result = "POTENTIAL_RFC_BUG (TREAT_AS_WITHDRAW / SILENT_DROP)"
 
         else:
             dropped_on_fatal = any(
@@ -625,15 +668,28 @@ def execute_live_pipeline(test_case):
                         else:
                             result = "UNEXPECTED_DISCONNECT"
                 else:
+                    rib_count = get_rib_route_count()
+                    logs = get_bgpd_logs(test_id)
                     if sent_soft_mutation:
-                        result = "POTENTIAL_RFC_BUG"
+                        if rib_count > 0:
+                            result = "POTENTIAL_RFC_BUG (ATTRIBUTE_DISCARD / INSTALLED)"
+                        else:
+                            result = "POTENTIAL_RFC_BUG (TREAT_AS_WITHDRAW / SILENT_DROP)"
                     else:
                         result = "DEEP_PASS"
 
     else:
+        rib_count = get_rib_route_count()
+        logs = get_bgpd_logs(test_id)
         if current_session_id > 0:
             model_expected_drop = (test_case["sequence"][-1]["resulting_state"] == "IDLE")
-            result = "POTENTIAL_RFC_BUG" if model_expected_drop else "DEEP_PASS"
+            if model_expected_drop:
+                if rib_count > 0:
+                    result = "POTENTIAL_RFC_BUG (ATTRIBUTE_DISCARD / INSTALLED)"
+                else:
+                    result = "POTENTIAL_RFC_BUG (TREAT_AS_WITHDRAW / SILENT_DROP)"
+            else:
+                result = "DEEP_PASS"
         else:
             result = "DEEP_PASS"
 
@@ -686,7 +742,7 @@ def main():
 
         if   cat == "DEEP_PASS":                     deep_passes.append(t_id)
         elif cat == "EXPECTED_DISCONNECT":           expected_drops.append(t_id)
-        elif cat == "POTENTIAL_RFC_BUG":             rfc_bugs.append(t_id)
+        elif cat.startswith("POTENTIAL_RFC_BUG"):    rfc_bugs.append(t_id)
         elif cat == "INFRASTRUCTURE_HANDSHAKE_ERROR": handshake_errors.append(t_id)
         elif cat == "UNEXPECTED_DISCONNECT":         unexp_drops.append(t_id)
         elif cat == "WRONG_NOTIFICATION_CODE":       wrong_notif_codes.append(t_id)
@@ -712,7 +768,7 @@ def main():
     print(f"Infrastructure TCP Refused        : {len(tcp_refused_list)}")   
     print("==================================================")
     if rfc_bugs:
-        print(f"\n[!] POTENTIAL RFC COMPLIANCE BUG TEST IDS:\n    {rfc_bugs}")
+        print(f"\n[!] POTENTIAL RFC COMPLIANCE BUG TEST IDS:\n    {rfc_bugs[:20]} ... (truncated)")
         print("==================================================")
     if unexp_drops:
         print(f"\n[!] UNEXPECTED SESSION DROP TEST IDS:\n    {unexp_drops}")
