@@ -1,0 +1,10 @@
+log file /tmp/bgpd.log debugging
+router bgp 65001
+ no bgp ebgp-requires-policy
+ neighbor 127.0.0.1 remote-as 65002
+ neighbor 172.17.0.1 remote-as 65002
+ neighbor 192.168.65.1 remote-as 65002
+ neighbor 192.168.65.2 remote-as 65002
+ bgp listen range 0.0.0.0/0 peer-group FUZZ
+ neighbor FUZZ peer-group
+ neighbor FUZZ remote-as 65002
