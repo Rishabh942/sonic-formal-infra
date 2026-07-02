@@ -3,7 +3,7 @@ import struct
 import json
 import time
 import subprocess
-from models.bgpd.malformed_packets.attribute_model_extended import parse_attributes, BGPPathAttr, ParseResult
+from models.bgpd.malformed_packets.bgp_oracle import parse_attributes, BGPPathAttr, ParseResult
 
 BGP_PORT = 1179
 BGP_IP = "127.0.0.1"

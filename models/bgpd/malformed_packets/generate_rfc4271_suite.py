@@ -1,4 +1,4 @@
-from models.bgpd.malformed_packets.attribute_model_extended import BGPPathAttr, parse_attributes
+from models.bgpd.malformed_packets.bgp_oracle import parse_attributes, BGPPathAttr, ParseResult
 
 def test_attribute_sequence_extended(
     flags1: int, type1: int, len1: int,
