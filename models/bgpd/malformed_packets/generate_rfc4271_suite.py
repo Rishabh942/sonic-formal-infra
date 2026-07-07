@@ -19,10 +19,15 @@ def test_attribute_sequence_extended(
         return "INVALID_INPUTS"
         
     attrs = [
+        BGPPathAttr(64, 1, 1),              # ORIGIN: Type 1
+        BGPPathAttr(64, 2, 4),              # AS_PATH: Type 2
+        BGPPathAttr(64, 3, 4),              # NEXT_HOP: Type 3
         BGPPathAttr(flags1, type1, len1),
         BGPPathAttr(flags2, type2, len2),
         BGPPathAttr(flags3, type3, len3)
     ]
     
     res = parse_attributes(attrs)
+    if res.name == "INVALID_INPUTS":
+        return "INVALID_INPUTS"
     return res.name

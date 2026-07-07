@@ -43,8 +43,8 @@ def parse_attributes(attrs: List[BGPPathAttr]) -> ParseResult:
                 break
         
         if is_duplicate:
-            # Duplicate MP_REACH/UNREACH is a MUST session reset, others are discarded
-            if attr.type_code in (14, 15):
+            # Duplicate mandatory attributes (1, 2, 3) and MP_REACH/UNREACH (14, 15) must session reset
+            if attr.type_code in (1, 2, 3, 14, 15):
                 escalate(ParseResult.SESSION_RESET)
             else:
                 escalate(ParseResult.ATTRIBUTE_DISCARD)
@@ -88,10 +88,10 @@ def parse_attributes(attrs: List[BGPPathAttr]) -> ParseResult:
                 escalate(ParseResult.TREAT_AS_WITHDRAW)
         elif attr.type_code == 14:
             if not is_optional or is_transitive:
-                escalate(ParseResult.AFI_SAFI_DISABLE)
+                escalate(ParseResult.SESSION_RESET)
         elif attr.type_code == 15:
             if not is_optional or is_transitive:
-                escalate(ParseResult.AFI_SAFI_DISABLE)
+                escalate(ParseResult.SESSION_RESET)
         elif attr.type_code == 16:
             if not is_optional or not is_transitive or (attr.length % 8 != 0):
                 escalate(ParseResult.TREAT_AS_WITHDRAW)
@@ -108,17 +108,19 @@ def parse_attributes(attrs: List[BGPPathAttr]) -> ParseResult:
             if not is_optional or not is_transitive:
                 escalate(ParseResult.TREAT_AS_WITHDRAW)
         elif attr.type_code == 128:
-            if not is_optional or not is_transitive:
+            if not is_optional:
+                escalate(ParseResult.SESSION_RESET)
+            elif not is_transitive:
                 escalate(ParseResult.TREAT_AS_WITHDRAW)
         else:
             # Unknown attribute handling (RFC 7606 revised from RFC 4271)
             if not is_optional:
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                escalate(ParseResult.SESSION_RESET)
             elif not is_transitive:
                 escalate(ParseResult.ATTRIBUTE_DISCARD)
 
-    # Validate that mandatory attributes exist (RFC 4271)
+    # Validate that mandatory attributes exist (RFC 7606)
     if not seen_origin or not seen_as_path or not seen_nexthop:
-        escalate(ParseResult.SESSION_RESET)
+        escalate(ParseResult.TREAT_AS_WITHDRAW)
         
     return final_result

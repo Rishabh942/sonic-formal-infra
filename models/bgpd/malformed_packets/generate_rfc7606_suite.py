@@ -21,6 +21,7 @@ def test_attribute_sequence_soft(
         BGPPathAttr(64, 3, 4),              # NEXT_HOP: Type 3, flags=64 (valid), len=4
         BGPPathAttr(flags4, type4, len4)    # OPTIONAL/4th attribute
     ]
-    
     res = parse_attributes(attrs)
+    if res.name == "INVALID_INPUTS":
+        return "INVALID_INPUTS"
     return res.name
