@@ -44,6 +44,8 @@ def get_rib_route_count():
 
 def execute_comprehensive_suite():
     print("[*] Starting Master Comprehensive Dynamic Fuzzer + Parity Engine")
+    print("[!] Scope Limitation: Fuzzed attributes are always packed LAST, after valid mandatory attributes.")
+    print("    This isolates the fuzzed variable but does not test malformed attributes in the first or middle positions.")
     
     # Load 3-attribute dictionary (Version 1)
     test_args_v1 = []
@@ -71,9 +73,12 @@ def execute_comprehensive_suite():
         "SESSION_TORN_DOWN": 0,
         "TREAT_AS_WITHDRAW": 0,
         "AFI_SAFI_DISABLE": 0,
-        "ROUTE_INSTALLED": 0,
+        "ROUTES_ILLEGALLY_INSTALLED": 0,
+        "LEGITIMATE_ROUTE_INSTALLS": 0,
         "ATTRIBUTE_DISCARD": 0,
-        "FRR_CRASH": 0
+        "FRR_CRASH": 0,
+        "TOTAL_EXECUTED": 0,
+        "VALID": 0
     }
     
     discrepancies = []
@@ -149,7 +154,8 @@ def execute_comprehensive_suite():
                 except Exception as e:
                     print(f"\n[!] BGP Handshake Failed: {e}", flush=True)
                     s.close()
-                    return
+                    results_tally["FRR_CRASH"] += 1
+                    continue
                 
                 # Pack attributes: valid mandatory attributes first, fuzzed attribute last.
                 # Placing the malformed attribute last prevents FRR from aborting parsing
@@ -184,9 +190,10 @@ def execute_comprehensive_suite():
                 attr_bytes += b'\x00' * f_len
                 attrs_for_oracle.append(BGPPathAttr(flags=f_flags, type_code=f_type, length=f_len))
                 
-                # Build UPDATE (no NLRI)
-                update_len = 23 + len(attr_bytes)
-                update_bytes = b'\xff'*16 + struct.pack('!HB', update_len, 2) + b'\x00\x00' + struct.pack('!H', len(attr_bytes)) + attr_bytes
+                # Build UPDATE with NLRI (10.0.0.0/24)
+                nlri_bytes = b'\x18\x0a\x00\x00'
+                update_len = 23 + len(attr_bytes) + len(nlri_bytes)
+                update_bytes = b'\xff'*16 + struct.pack('!HB', update_len, 2) + b'\x00\x00' + struct.pack('!H', len(attr_bytes)) + attr_bytes + nlri_bytes
                 
                 # Predict
                 oracle_res = parse_attributes(attrs_for_oracle)
@@ -223,26 +230,41 @@ def execute_comprehensive_suite():
                 except ConnectionResetError:
                     is_active = False
                 
+                route_count = 0
+                if is_active and not notification_received:
+                    route_count = get_rib_route_count()
+                
                 s.close()
                 time.sleep(0.01)
                 
                 # Classify actual behavior
+                results_tally["TOTAL_EXECUTED"] += 1
                 if notification_received or not is_active:
                     frr_result = "SESSION_RESET"
                     results_tally["SESSION_TORN_DOWN"] += 1
                 else:
-                    # Session remains alive (graceful degradation)
-                    # We map to the oracle's expected non-reset category
-                    oracle_mapped_temp = "SESSION_RESET" if oracle_res == ParseResult.SESSION_RESET else \
-                                        ("ATTRIBUTE_DISCARD" if oracle_res == ParseResult.ATTRIBUTE_DISCARD else \
-                                        ("AFI_SAFI_DISABLE" if oracle_res == ParseResult.AFI_SAFI_DISABLE else "TREAT_AS_WITHDRAW"))
-                    
-                    if oracle_mapped_temp in ("ATTRIBUTE_DISCARD", "VALID"):
-                        frr_result = oracle_mapped_temp
-                        results_tally[oracle_mapped_temp] += 1
+                    # Session remains alive. Independently check RIB to see if route was installed.
+                    if route_count > 0:
+                        # Route was installed
+                        if oracle_res in (ParseResult.VALID, ParseResult.ATTRIBUTE_DISCARD):
+                            results_tally["LEGITIMATE_ROUTE_INSTALLS"] += 1
+                        else:
+                            results_tally["ROUTES_ILLEGALLY_INSTALLED"] += 1
+                            
+                        # Disambiguate for tally (so totals match expectations)
+                        frr_result = "ATTRIBUTE_DISCARD" if oracle_res == ParseResult.ATTRIBUTE_DISCARD else "VALID"
+                        if frr_result == "ATTRIBUTE_DISCARD":
+                            results_tally["ATTRIBUTE_DISCARD"] += 1
+                        else:
+                            results_tally["VALID"] += 1
                     else:
-                        frr_result = "TREAT_AS_WITHDRAW"
-                        results_tally["TREAT_AS_WITHDRAW"] += 1
+                        # Route not installed
+                        if oracle_res == ParseResult.AFI_SAFI_DISABLE:
+                            frr_result = "AFI_SAFI_DISABLE"
+                            results_tally["AFI_SAFI_DISABLE"] += 1
+                        else:
+                            frr_result = "TREAT_AS_WITHDRAW"
+                            results_tally["TREAT_AS_WITHDRAW"] += 1
                 
                 # Verify Parity
                 oracle_mapped = "SESSION_RESET" if oracle_res == ParseResult.SESSION_RESET else \
@@ -289,10 +311,7 @@ def execute_comprehensive_suite():
     print("\n==================================================")
     print("      COMPREHENSIVE EMPIRICAL RESULTS SUMMARY     ")
     print("==================================================")
-    total_executed = 0
-    if run_s1: total_executed += len(test_args_v1)
-    if run_s2: total_executed += len(test_args_v2)
-    print(f"Total Tests Executed      : {total_executed}")
+    print(f"Total Tests Executed      : {results_tally['TOTAL_EXECUTED']}")
     print("\n--- Strict Enforcement (RFC 4271) ---")
     print(f"[PASS] Session Teardowns  : {results_tally['SESSION_TORN_DOWN']}")
     print("\n--- Graceful Degradation (RFC 7606) ---")
@@ -300,7 +319,8 @@ def execute_comprehensive_suite():
     print(f"[PASS] AFI/SAFI Disable   : {results_tally['AFI_SAFI_DISABLE']}")
     print(f"[PASS] Attribute Discard  : {results_tally['ATTRIBUTE_DISCARD']}")
     print("\n--- Critical Metrics ---")
-    print(f"Routes Illegally Installed: {results_tally['ROUTE_INSTALLED']}")
+    print(f"Legitimate Route Installs : {results_tally['LEGITIMATE_ROUTE_INSTALLS']}")
+    print(f"Routes Illegally Installed: {results_tally['ROUTES_ILLEGALLY_INSTALLED']}")
     print(f"FRR Parser Crashes        : {results_tally['FRR_CRASH']}")
     print("--------------------------------------------------")
     print(f"Unexpected Protocol Deviations: {len(discrepancies)}")
@@ -309,8 +329,6 @@ def execute_comprehensive_suite():
         print("\n=> VERDICT: 100% PERFECT PARITY. FRR perfectly implements the selected RFCs.")
     else:
         print(f"\n=> VERDICT: {len(discrepancies)} Protocol Deviations Found.")
-        print("Note: If running Suite 1 (RFC 4271), these deviations are NOT bugs.")
-        print("FRR is safely using modern RFC 7606 Graceful Degradation instead of tearing down the session.")
         print("Deviant Test IDs:")
         for idx, d in enumerate(discrepancies):
             if idx > 15:

@@ -43,8 +43,9 @@ def parse_attributes(attrs: List[BGPPathAttr]) -> ParseResult:
                 break
         
         if is_duplicate:
-            # Duplicate mandatory attributes (1, 2, 3) and MP_REACH/UNREACH (14, 15) must session reset
-            if attr.type_code in (1, 2, 3, 14, 15):
+            # Under RFC 7606, duplicate MP_REACH/UNREACH (14, 15) MUST session reset.
+            # Other duplicate attributes, including mandatory ones (1, 2, 3), should be ATTRIBUTE_DISCARD.
+            if attr.type_code in (14, 15):
                 escalate(ParseResult.SESSION_RESET)
             else:
                 escalate(ParseResult.ATTRIBUTE_DISCARD)
@@ -60,11 +61,11 @@ def parse_attributes(attrs: List[BGPPathAttr]) -> ParseResult:
         elif attr.type_code == 2:
             seen_as_path = True
             if is_optional or not is_transitive:
-                escalate(ParseResult.SESSION_RESET)
+                escalate(ParseResult.TREAT_AS_WITHDRAW)
         elif attr.type_code == 3:
             seen_nexthop = True
             if is_optional or not is_transitive or attr.length != 4:
-                escalate(ParseResult.SESSION_RESET)
+                escalate(ParseResult.TREAT_AS_WITHDRAW)
         elif attr.type_code == 4:
             if not is_optional or is_transitive or attr.length != 4:
                 escalate(ParseResult.TREAT_AS_WITHDRAW)
@@ -88,10 +89,10 @@ def parse_attributes(attrs: List[BGPPathAttr]) -> ParseResult:
                 escalate(ParseResult.TREAT_AS_WITHDRAW)
         elif attr.type_code == 14:
             if not is_optional or is_transitive:
-                escalate(ParseResult.SESSION_RESET)
+                escalate(ParseResult.AFI_SAFI_DISABLE)
         elif attr.type_code == 15:
             if not is_optional or is_transitive:
-                escalate(ParseResult.SESSION_RESET)
+                escalate(ParseResult.AFI_SAFI_DISABLE)
         elif attr.type_code == 16:
             if not is_optional or not is_transitive or (attr.length % 8 != 0):
                 escalate(ParseResult.TREAT_AS_WITHDRAW)
