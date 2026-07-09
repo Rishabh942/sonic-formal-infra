@@ -69,6 +69,16 @@ def execute_comprehensive_suite():
         print("[-] Could not find attr_argdict_soft.txt")
         return
 
+    # Load semantic communities dictionary (Version 3)
+    test_args_v3 = []
+    try:
+        with open("models/bgpd/malformed_packets/tests/attr_argdict_semantic.txt", "r") as f:
+            for line in f:
+                if not line.strip(): continue
+                test_args_v3.append(eval(line.strip()))
+    except FileNotFoundError:
+        print("[-] Could not find attr_argdict_semantic.txt (run generator first if testing Suite 3)")
+
     results_tally = {
         "SESSION_TORN_DOWN": 0,
         "TREAT_AS_WITHDRAW": 0,
@@ -87,12 +97,15 @@ def execute_comprehensive_suite():
         total_cases = len(test_args)
         
         # Determine the dynamic slots to test for each test case
-        if not has_hardcoded_mandatory:
+        if version == 1:
             # Suite 1 has dynamic slots 1, 2, 3
             slots = [1, 2, 3]
-        else:
+        elif version == 2:
             # Suite 2 has dynamic slot 1 (ORIGIN) and slot 4 (Optional)
             slots = [1, 4]
+        else:
+            # Suite 3 has only dynamic slot 4 (Optional)
+            slots = [4]
             
         for i, args in enumerate(test_args):
             if (i + 1) % 10 == 0 or (i + 1) == total_cases:
@@ -187,7 +200,13 @@ def execute_comprehensive_suite():
                     attr_bytes += struct.pack('!H', f_len)
                 else:
                     attr_bytes += struct.pack('!B', f_len)
-                attr_bytes += b'\x00' * f_len
+                
+                # Payload injection
+                if "payload_hex" in args:
+                    payload = bytes.fromhex(args["payload_hex"])
+                    attr_bytes += payload
+                else:
+                    attr_bytes += b'\x00' * f_len
                 attrs_for_oracle.append(BGPPathAttr(flags=f_flags, type_code=f_type, length=f_len))
                 
                 # Build UPDATE with NLRI (10.0.0.0/24)
@@ -267,9 +286,16 @@ def execute_comprehensive_suite():
                             results_tally["TREAT_AS_WITHDRAW"] += 1
                 
                 # Verify Parity
-                oracle_mapped = "SESSION_RESET" if oracle_res == ParseResult.SESSION_RESET else \
-                                ("ATTRIBUTE_DISCARD" if oracle_res == ParseResult.ATTRIBUTE_DISCARD else \
-                                ("AFI_SAFI_DISABLE" if oracle_res == ParseResult.AFI_SAFI_DISABLE else "TREAT_AS_WITHDRAW"))
+                if oracle_res == ParseResult.VALID:
+                    oracle_mapped = "VALID"
+                elif oracle_res == ParseResult.SESSION_RESET:
+                    oracle_mapped = "SESSION_RESET"
+                elif oracle_res == ParseResult.ATTRIBUTE_DISCARD:
+                    oracle_mapped = "ATTRIBUTE_DISCARD"
+                elif oracle_res == ParseResult.AFI_SAFI_DISABLE:
+                    oracle_mapped = "AFI_SAFI_DISABLE"
+                else:
+                    oracle_mapped = "TREAT_AS_WITHDRAW"
                                 
                 if frr_result != oracle_mapped:
                     test_id = f"V{version}-{i}-slot{slot}"
@@ -285,19 +311,21 @@ def execute_comprehensive_suite():
     print("\nWhich suite would you like to run?")
     print("  1) Suite 1: Strict Teardowns (RFC 4271)")
     print("  2) Suite 2: Soft Faults (RFC 7606)")
-    print("  3) Both (Default)")
+    print("  3) Suite 3: Semantic Communities")
+    print("  4) All Suites (Default)")
     try:
-        choice = input("Enter choice [1-3]: ").strip()
+        choice = input("Enter choice [1-4]: ").strip()
     except (EOFError, KeyboardInterrupt):
-        choice = '3'
-        print("3")
+        choice = '4'
+        print("4")
     
-    run_s1 = choice in ('1', '3', '')
-    run_s2 = choice in ('2', '3', '')
+    run_s1 = choice in ('1', '4', '')
+    run_s2 = choice in ('2', '4', '')
+    run_s3 = choice in ('3', '4', '')
     
-    if not run_s1 and not run_s2:
-        print("Invalid choice, defaulting to Both.")
-        run_s1 = run_s2 = True
+    if not any([run_s1, run_s2, run_s3]):
+        print("Invalid choice, defaulting to All.")
+        run_s1 = run_s2 = run_s3 = True
     
     
     if run_s1:
@@ -307,6 +335,13 @@ def execute_comprehensive_suite():
     if run_s2:
         print("\n[*] Running Suite 2: Soft Faults (RFC 7606)")
         run_suite(test_args_v2, version=2, has_hardcoded_mandatory=True)
+
+    if run_s3:
+        if not test_args_v3:
+            print("\n[-] Suite 3 skipped (dictionary not found).")
+        else:
+            print("\n[*] Running Suite 3: Semantic Communities")
+            run_suite(test_args_v3, version=3, has_hardcoded_mandatory=True)
 
     print("\n==================================================")
     print("      COMPREHENSIVE EMPIRICAL RESULTS SUMMARY     ")
