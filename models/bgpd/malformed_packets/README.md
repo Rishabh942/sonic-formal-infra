@@ -2,7 +2,7 @@
 
 This module provides a formal verification testing suite that mathematically proves whether an open-source BGP parser (FRRouting) complies with the error-handling specifications detailed in **RFC 4271 (BGP-4)** and **RFC 7606 (Revised Error Handling)**.
 
-By leveraging an SMT solver (Z3 via CrossHair), we condensed the infinite space of malformed BGP Update payloads into a mathematically complete set of 1,041 exact edge cases. This suite fires those payloads at a live FRR daemon and asserts that FRR's physical C-parser perfectly mimics our mathematical Python Oracle.
+By leveraging an SMT solver (Z3 via CrossHair), we condensed the infinite space of malformed BGP Update payloads into a mathematically complete set of exact edge cases (Suites 1 & 2). We also included directed semantic fuzzing for Community attributes (Suite 3). This suite fires these payloads at a live FRR daemon and asserts that FRR's physical C-parser mimics our Python Oracle (RFC 7606).
 
 ## 🚀 Prerequisites
 
@@ -51,7 +51,7 @@ crosshair watch generate_rfc7606_suite.py
 This commands Z3 to analyze `bgp_oracle.py` and output every unique variable combination required to achieve 100% path coverage.
 
 ### Phase 2: Running the Master Fuzzer
-To dynamically inject the 1,041 mathematically synthesized payloads into the live FRR router and verify compliance, run the comprehensive fuzzer from the root of the repo:
+To dynamically inject the mathematically synthesized payloads into the live FRR router and verify compliance, run the comprehensive fuzzer from the root of the repo:
 
 ```bash
 cd ../../../ # Go back to sonic-formal-infra root
@@ -66,23 +66,24 @@ Upon completion, you will see a comprehensive parity report:
 ==================================================
       COMPREHENSIVE EMPIRICAL RESULTS SUMMARY     
 ==================================================
-Total Tests Executed      : 1041
+Total Tests Executed      : 2334
 
 --- Strict Enforcement (RFC 4271) ---
-[PASS] Session Teardowns  : 520
+[PASS] Session Teardowns  : 860
 
 --- Graceful Degradation (RFC 7606) ---
-[PASS] Soft Faults        : 472
-[PASS] AFI/SAFI Disable   : 49
-[PASS] Attribute Discard  : 0
+[PASS] Soft Faults        : 1076
+[PASS] AFI/SAFI Disable   : 0
+[PASS] Attribute Discard  : 286
 
 --- Critical Metrics ---
-Routes Illegally Installed: 0
+Legitimate Route Installs : 306
+Routes Illegally Installed: 92
 FRR Parser Crashes        : 0
 --------------------------------------------------
-RFC Compliance Deviations : 0
+Unexpected Protocol Deviations: 857
 
-=> VERDICT: 100% PERFECT PARITY. FRR complies with all RFC bounds.
+=> VERDICT: 857 Protocol Deviations Found.
 ```
 
-If a future update to FRR introduces a parser bug or a non-compliant behavior, the `RFC Compliance Deviations` counter will increment, and the fuzzer will output the specific **Test IDs** (e.g., `V2-45`) so you can isolate and reproduce the exact broken payload. A detailed JSON file (`parity_report_comprehensive.json`) will also be generated containing the exact hex arguments used.
+If the `RFC Compliance Deviations` counter increments, it means FRR's behavior deviates from strict RFC 7606 expectations (e.g., dropping the session instead of doing a Treat-As-Withdraw, or illegally installing a malformed optional attribute). The fuzzer will output the specific **Test IDs** (e.g., `V2-45`) so you can isolate and reproduce the exact broken payload. A detailed JSON file (`parity_report_comprehensive.json`) will also be generated containing the exact hex arguments used.

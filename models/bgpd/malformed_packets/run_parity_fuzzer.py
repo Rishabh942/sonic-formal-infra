@@ -31,16 +31,17 @@ def build_bgp_open():
 def build_bgp_keepalive():
     return KEEPALIVE_MESSAGE
 
-def get_rib_route_count():
+def check_if_route_installed(prefix="10.0.0.0/24"):
     try:
         out = subprocess.check_output(
-            ["docker", "exec", "frr-lab", "vtysh", "-c", "show ip bgp json"],
+            ["docker", "exec", "frr-lab", "vtysh", "-c", f"show ip bgp {prefix} json"],
             stderr=subprocess.DEVNULL
         )
         data = json.loads(out)
-        return len(data.get("routes", {}))
+        return "paths" in data or "prefix" in data
     except Exception as e:
-        raise Exception(f"Failed to check RIB state: {e}")
+        print(f"Failed to check RIB state: {e}")
+        return False
 
 def execute_comprehensive_suite():
     print("[*] Starting Master Comprehensive Dynamic Fuzzer + Parity Engine")
@@ -219,8 +220,8 @@ def execute_comprehensive_suite():
                 
                 try:
                     s.sendall(update_bytes)
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
+                except Exception as e:
+                    print(f"[-] Failed to send UPDATE packet: {e}")
                 
                 notification_received = False
                 is_active = True
@@ -249,9 +250,9 @@ def execute_comprehensive_suite():
                 except ConnectionResetError:
                     is_active = False
                 
-                route_count = 0
+                installed = False
                 if is_active and not notification_received:
-                    route_count = get_rib_route_count()
+                    installed = check_if_route_installed()
                 
                 s.close()
                 time.sleep(0.01)
@@ -263,7 +264,7 @@ def execute_comprehensive_suite():
                     results_tally["SESSION_TORN_DOWN"] += 1
                 else:
                     # Session remains alive. Independently check RIB to see if route was installed.
-                    if route_count > 0:
+                    if installed:
                         # Route was installed
                         if oracle_res in (ParseResult.VALID, ParseResult.ATTRIBUTE_DISCARD):
                             results_tally["LEGITIMATE_ROUTE_INSTALLS"] += 1

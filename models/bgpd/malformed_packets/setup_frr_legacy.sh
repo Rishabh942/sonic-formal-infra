@@ -7,7 +7,7 @@ docker stop frr-lab 2>/dev/null
 docker rm frr-lab 2>/dev/null
 
 # Start FRR container with port mapping
-docker run -d --privileged --name frr-lab -p 1179:179 quay.io/frrouting/frr:10.0.1
+docker run -d --privileged --name frr-lab -p 1179:179 frrouting/frr:v7.5.0
 
 echo "[*] Waiting for container to initialize..."
 sleep 3
@@ -18,13 +18,11 @@ docker exec frr-lab sed -i 's/bgpd=no/bgpd=yes/g' /etc/frr/daemons
 # Create minimal FRR config
 cat << 'EOF' > frr.conf.tmp
 log file /tmp/bgpd.log debugging
- router bgp 65001
-  no bgp ebgp-requires-policy
-  neighbor FUZZ peer-group
-  neighbor FUZZ remote-as 65002
-  neighbor FUZZ disable-connected-check
-  neighbor FUZZ ebgp-multihop 255
-  bgp listen range 0.0.0.0/0 peer-group FUZZ
+router bgp 65001
+ no bgp ebgp-requires-policy
+ neighbor FUZZ peer-group
+ neighbor FUZZ remote-as 65002
+ bgp listen range 0.0.0.0/0 peer-group FUZZ
 EOF
 
 docker cp frr.conf.tmp frr-lab:/etc/frr/frr.conf
