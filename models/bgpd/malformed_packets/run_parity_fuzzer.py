@@ -207,6 +207,12 @@ def evaluate_result(oracle_res, notification_received, is_active, installed, ver
             "oracle_state": oracle_res.name
         })
 
+    results_tally["MATRIX"][oracle_mapped]["TOTAL"] += 1
+    if frr_result == oracle_mapped:
+        results_tally["MATRIX"][oracle_mapped]["PASS"] += 1
+    else:
+        results_tally["MATRIX"][oracle_mapped]["FAIL"] += 1
+
 def execute_comprehensive_suite():
     print("[*] Starting Master Comprehensive Dynamic Fuzzer + Parity Engine")
     print("[!] Scope Limitation: Fuzzed attributes are always packed LAST, after valid mandatory attributes.")
@@ -253,7 +259,14 @@ def execute_comprehensive_suite():
         "ATTRIBUTE_DISCARD": 0,
         "FRR_CRASH": 0,
         "TOTAL_EXECUTED": 0,
-        "VALID": 0
+        "VALID": 0,
+        "MATRIX": {
+            "VALID": {"TOTAL": 0, "PASS": 0, "FAIL": 0},
+            "SESSION_RESET": {"TOTAL": 0, "PASS": 0, "FAIL": 0},
+            "ATTRIBUTE_DISCARD": {"TOTAL": 0, "PASS": 0, "FAIL": 0},
+            "AFI_SAFI_DISABLE": {"TOTAL": 0, "PASS": 0, "FAIL": 0},
+            "TREAT_AS_WITHDRAW": {"TOTAL": 0, "PASS": 0, "FAIL": 0},
+        }
     }
     
     discrepancies = []
@@ -343,21 +356,26 @@ def execute_comprehensive_suite():
             print("\n[*] Running Suite 3: Semantic Communities")
             run_suite(test_args_v3, version=3, has_hardcoded_mandatory=True)
 
-    print("\n==================================================")
-    print("      COMPREHENSIVE EMPIRICAL RESULTS SUMMARY     ")
-    print("==================================================")
+    print("\n=======================================================================")
+    print("                COMPREHENSIVE EMPIRICAL RESULTS SUMMARY                ")
+    print("=======================================================================")
     print(f"Total Tests Executed      : {results_tally['TOTAL_EXECUTED']}")
-    print("\n--- Strict Enforcement (RFC 4271) ---")
-    print(f"[PASS] Session Teardowns  : {results_tally['SESSION_TORN_DOWN']}")
-    print("\n--- Graceful Degradation (RFC 7606) ---")
-    print(f"[PASS] Soft Faults        : {results_tally['TREAT_AS_WITHDRAW']}")
-    print(f"[PASS] AFI/SAFI Disable   : {results_tally['AFI_SAFI_DISABLE']}")
-    print(f"[PASS] Attribute Discard  : {results_tally['ATTRIBUTE_DISCARD']}")
+    print("\n--- Test Categorization (By Expected Behavior) ---")
+    print(f"{'Category':<28} | {'Total':>7} | {'PASS':>7} | {'FAIL':>7}")
+    print("-" * 55)
+    
+    mat = results_tally['MATRIX']
+    print(f"{'Valid Updates':<28} | {mat['VALID']['TOTAL']:>7} | {mat['VALID']['PASS']:>7} | {mat['VALID']['FAIL']:>7}")
+    print(f"{'Strict Teardown (RFC 4271)':<28} | {mat['SESSION_RESET']['TOTAL']:>7} | {mat['SESSION_RESET']['PASS']:>7} | {mat['SESSION_RESET']['FAIL']:>7}")
+    print(f"{'Treat-as-Withdraw (RFC 7606)':<28} | {mat['TREAT_AS_WITHDRAW']['TOTAL']:>7} | {mat['TREAT_AS_WITHDRAW']['PASS']:>7} | {mat['TREAT_AS_WITHDRAW']['FAIL']:>7}")
+    print(f"{'AFI/SAFI Disable (RFC 7606)':<28} | {mat['AFI_SAFI_DISABLE']['TOTAL']:>7} | {mat['AFI_SAFI_DISABLE']['PASS']:>7} | {mat['AFI_SAFI_DISABLE']['FAIL']:>7}")
+    print(f"{'Attribute Discard (RFC 7606)':<28} | {mat['ATTRIBUTE_DISCARD']['TOTAL']:>7} | {mat['ATTRIBUTE_DISCARD']['PASS']:>7} | {mat['ATTRIBUTE_DISCARD']['FAIL']:>7}")
+    
     print("\n--- Critical Metrics ---")
     print(f"Legitimate Route Installs : {results_tally['LEGITIMATE_ROUTE_INSTALLS']}")
     print(f"Routes Illegally Installed: {results_tally['ROUTES_ILLEGALLY_INSTALLED']}")
     print(f"FRR Parser Crashes        : {results_tally['FRR_CRASH']}")
-    print("--------------------------------------------------")
+    print("-----------------------------------------------------------------------")
     print(f"Unexpected Protocol Deviations: {len(discrepancies)}")
     
     if len(discrepancies) == 0:

@@ -80,26 +80,27 @@ This will run all generated test cases against `bgp_oracle.py` and output a term
 ### 📊 Understanding the Output
 The fuzzer runs in real-time, executing roughly 100 payloads per minute. It checks whether FRR responds with a strict `SESSION_RESET`, or correctly degrades the route via `Treat-as-Withdraw` / `AFI_SAFI_DISABLE`.
 
-Upon completion, you will see a comprehensive parity report:
+Upon completion, you will see a comprehensive parity report similar to this example:
 ```text
-==================================================
-      COMPREHENSIVE EMPIRICAL RESULTS SUMMARY     
-==================================================
+=======================================================================
+                COMPREHENSIVE EMPIRICAL RESULTS SUMMARY                
+=======================================================================
 Total Tests Executed      : 2334
 
---- Strict Enforcement (RFC 4271) ---
-[PASS] Session Teardowns  : 860
-
---- Graceful Degradation (RFC 7606) ---
-[PASS] Soft Faults        : 1076
-[PASS] AFI/SAFI Disable   : 0
-[PASS] Attribute Discard  : 286
+--- Test Categorization (By Expected Behavior) ---
+Category                     |   Total |    PASS |    FAIL
+-------------------------------------------------------
+Valid Updates                |      52 |      52 |       0
+Strict Teardown (RFC 4271)   |    1120 |     860 |     260
+Treat-as-Withdraw (RFC 7606) |     876 |     279 |     597
+AFI/SAFI Disable (RFC 7606)  |       0 |       0 |       0
+Attribute Discard (RFC 7606) |     286 |     286 |       0
 
 --- Critical Metrics ---
 Legitimate Route Installs : 306
 Routes Illegally Installed: 92
 FRR Parser Crashes        : 0
---------------------------------------------------
+-----------------------------------------------------------------------
 Unexpected Protocol Deviations: 857
 
 => VERDICT: 857 Protocol Deviations Found.
