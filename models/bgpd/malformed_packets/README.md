@@ -4,6 +4,15 @@ This module provides a formal verification testing suite that mathematically pro
 
 By leveraging an SMT solver (Z3 via CrossHair), we condensed the infinite space of malformed BGP Update payloads into a mathematically complete set of exact edge cases (Suites 1 & 2). We also included directed semantic fuzzing for Community attributes (Suite 3). This suite fires these payloads at a live FRR daemon and asserts that FRR's physical C-parser mimics our Python Oracle (RFC 7606).
 
+## Core Architecture and File Explanations
+
+In this repository, we construct a formal model that acts as a "source of truth", and then we compare the outputs of our model with a live implementation (e.g. FRRouting) by sending generated packets over a local socket.
+
+How the pieces fit together for the **BGP Malformed Packets** project:
+- **`bgp_oracle.py`**: The formal reference implementation (Oracle). It reads incoming BGP path attributes and models strict logical branching outlined by RFC 4271 and RFC 7606 (e.g., when to trigger a Session Reset vs Attribute Discard).
+- **`run_parity_fuzzer.py`**: The engine driving the parity checks. It loads generated test dictionaries from `tests/`, connects over a socket to a live FRR daemon (e.g. `127.0.0.1:1179`), performs a BGP handshake, and ships the fuzzed packets. Finally, it observes if FRR crashed, tore down the session, or gracefully discarded attributes, comparing these live results precisely against the `bgp_oracle.py` expectations.
+- **`coverage.py`**: Wraps the execution of `run_parity_fuzzer.py` using Python's `coverage` tool configured for strict **branch coverage**. This ensures that generated test cases cover 100% of all possible `if/else` edges (both True and False paths) inside the `bgp_oracle.py` specification, validating the thoroughness of the fuzzer.
+
 ## 🚀 Prerequisites
 
 To replicate these tests on your machine, you must have the following installed:
@@ -27,7 +36,7 @@ cd sonic-formal-infra/models/bgpd/malformed_packets
 ```
 
 **What the setup script does:**
-- Downloads the `frrouting/frr:latest` Docker image.
+- Downloads the `quay.io/frrouting/frr:10.0.1` Docker image.
 - Spins up a container named `frr-lab` and exposes BGP port `179` to `1179` on your localhost.
 - Automatically injects the necessary configuration to enable `bgpd` and configures it to peer with our Python fuzzer via AS 65002.
 
@@ -57,6 +66,16 @@ To dynamically inject the mathematically synthesized payloads into the live FRR 
 cd ../../../ # Go back to sonic-formal-infra root
 PYTHONPATH=. python3 models/bgpd/malformed_packets/run_parity_fuzzer.py
 ```
+
+### Phase 3: Branch Coverage Verification
+To prove that our fuzzing payloads rigorously exercise the logic inside the formal model, you can run the suite under strict branch coverage tracking. This ensures the fuzzer hits all possible True/False logical edges outlined by the RFCs:
+
+```bash
+cd ../../../ # Go back to sonic-formal-infra root
+PYTHONPATH=. python3 -m models.bgpd.malformed_packets.coverage
+```
+
+This will run all generated test cases against `bgp_oracle.py` and output a terminal coverage report.
 
 ### 📊 Understanding the Output
 The fuzzer runs in real-time, executing roughly 100 payloads per minute. It checks whether FRR responds with a strict `SESSION_RESET`, or correctly degrades the route via `Treat-as-Withdraw` / `AFI_SAFI_DISABLE`.

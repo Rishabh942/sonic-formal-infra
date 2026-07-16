@@ -15,6 +15,17 @@ class BGPPathAttr:
     type_code: int
     length: int
 
+def escalate(new_result: ParseResult, current_result: ParseResult) -> ParseResult:
+    if new_result == ParseResult.SESSION_RESET:
+        return ParseResult.SESSION_RESET
+    elif new_result == ParseResult.AFI_SAFI_DISABLE and current_result not in (ParseResult.SESSION_RESET,):
+        return ParseResult.AFI_SAFI_DISABLE
+    elif new_result == ParseResult.TREAT_AS_WITHDRAW and current_result not in (ParseResult.SESSION_RESET, ParseResult.AFI_SAFI_DISABLE):
+        return ParseResult.TREAT_AS_WITHDRAW
+    elif new_result == ParseResult.ATTRIBUTE_DISCARD and current_result == ParseResult.VALID:
+        return ParseResult.ATTRIBUTE_DISCARD
+    return current_result
+
 def parse_attributes(attrs: List[BGPPathAttr]) -> ParseResult:
     """Simulates comprehensive FRR bgp_attr_parse() logical branches for RFC 4271/7606."""
     seen_origin = False
@@ -23,17 +34,6 @@ def parse_attributes(attrs: List[BGPPathAttr]) -> ParseResult:
     
     final_result = ParseResult.VALID
     
-    def escalate(new_result: ParseResult):
-        nonlocal final_result
-        if new_result == ParseResult.SESSION_RESET:
-            final_result = ParseResult.SESSION_RESET
-        elif new_result == ParseResult.AFI_SAFI_DISABLE and final_result not in (ParseResult.SESSION_RESET,):
-            final_result = ParseResult.AFI_SAFI_DISABLE
-        elif new_result == ParseResult.TREAT_AS_WITHDRAW and final_result not in (ParseResult.SESSION_RESET, ParseResult.AFI_SAFI_DISABLE):
-            final_result = ParseResult.TREAT_AS_WITHDRAW
-        elif new_result == ParseResult.ATTRIBUTE_DISCARD and final_result == ParseResult.VALID:
-            final_result = ParseResult.ATTRIBUTE_DISCARD
-
     # SMT-friendly duplicate check
     for i, attr in enumerate(attrs):
         is_duplicate = False
@@ -46,9 +46,9 @@ def parse_attributes(attrs: List[BGPPathAttr]) -> ParseResult:
             # Under RFC 7606, duplicate MP_REACH/UNREACH (14, 15) MUST session reset.
             # Other duplicate attributes, including mandatory ones (1, 2, 3), should be ATTRIBUTE_DISCARD.
             if attr.type_code in (14, 15):
-                escalate(ParseResult.SESSION_RESET)
+                final_result = escalate(ParseResult.SESSION_RESET, final_result)
             else:
-                escalate(ParseResult.ATTRIBUTE_DISCARD)
+                final_result = escalate(ParseResult.ATTRIBUTE_DISCARD, final_result)
             continue
 
         is_optional = (attr.flags & 0x80) != 0
@@ -57,71 +57,71 @@ def parse_attributes(attrs: List[BGPPathAttr]) -> ParseResult:
         if attr.type_code == 1:
             seen_origin = True
             if is_optional or not is_transitive or attr.length != 1:
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 2:
             seen_as_path = True
             if is_optional or not is_transitive:
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 3:
             seen_nexthop = True
             if is_optional or not is_transitive or attr.length != 4:
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 4:
             if not is_optional or is_transitive or attr.length != 4:
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 5:
             if is_optional or not is_transitive or attr.length != 4:
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 6:
             if is_optional or not is_transitive or attr.length != 0:
-                escalate(ParseResult.ATTRIBUTE_DISCARD)
+                final_result = escalate(ParseResult.ATTRIBUTE_DISCARD, final_result)
         elif attr.type_code == 7:
             if not is_optional or not is_transitive or attr.length != 6:
-                escalate(ParseResult.ATTRIBUTE_DISCARD)
+                final_result = escalate(ParseResult.ATTRIBUTE_DISCARD, final_result)
         elif attr.type_code == 8:
             if not is_optional or not is_transitive or (attr.length % 4 != 0):
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 9:
             if not is_optional or is_transitive or attr.length != 4:
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 10:
             if not is_optional or is_transitive or (attr.length % 4 != 0):
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 14:
             if not is_optional or is_transitive:
-                escalate(ParseResult.AFI_SAFI_DISABLE)
+                final_result = escalate(ParseResult.AFI_SAFI_DISABLE, final_result)
         elif attr.type_code == 15:
             if not is_optional or is_transitive:
-                escalate(ParseResult.AFI_SAFI_DISABLE)
+                final_result = escalate(ParseResult.AFI_SAFI_DISABLE, final_result)
         elif attr.type_code == 16:
             if not is_optional or not is_transitive or (attr.length % 8 != 0):
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 17:
             if not is_optional or not is_transitive:
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 18:
             if not is_optional or not is_transitive or attr.length != 8:
-                escalate(ParseResult.ATTRIBUTE_DISCARD)
+                final_result = escalate(ParseResult.ATTRIBUTE_DISCARD, final_result)
         elif attr.type_code == 22:
             if not is_optional or not is_transitive:
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 32:
             if not is_optional or not is_transitive:
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 128:
             if not is_optional:
-                escalate(ParseResult.SESSION_RESET)
+                final_result = escalate(ParseResult.SESSION_RESET, final_result)
             elif not is_transitive:
-                escalate(ParseResult.TREAT_AS_WITHDRAW)
+                final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         else:
             # Unknown attribute handling (RFC 7606 revised from RFC 4271)
             if not is_optional:
-                escalate(ParseResult.SESSION_RESET)
+                final_result = escalate(ParseResult.SESSION_RESET, final_result)
             elif not is_transitive:
-                escalate(ParseResult.ATTRIBUTE_DISCARD)
+                final_result = escalate(ParseResult.ATTRIBUTE_DISCARD, final_result)
 
     # Validate that mandatory attributes exist (RFC 7606)
     if not seen_origin or not seen_as_path or not seen_nexthop:
-        escalate(ParseResult.TREAT_AS_WITHDRAW)
+        final_result = escalate(ParseResult.TREAT_AS_WITHDRAW, final_result)
         
     return final_result
