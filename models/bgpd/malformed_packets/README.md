@@ -90,20 +90,20 @@ Total Tests Executed      : 2334
 --- Test Categorization (By Expected Behavior) ---
 Category                     |   Total |    PASS |    FAIL
 -------------------------------------------------------
-Valid Updates                |      52 |      52 |       0
-Strict Teardown (RFC 4271)   |    1120 |     860 |     260
-Treat-as-Withdraw (RFC 7606) |     876 |     279 |     597
+Valid Updates                |      22 |      20 |       2
+Strict Teardown (RFC 4271)   |     110 |     110 |       0
+Treat-as-Withdraw (RFC 7606) |    1719 |    1719 |       0
 AFI/SAFI Disable (RFC 7606)  |       0 |       0 |       0
-Attribute Discard (RFC 7606) |     286 |     286 |       0
+Attribute Discard (RFC 7606) |     483 |     483 |       0
 
 --- Critical Metrics ---
-Legitimate Route Installs : 306
-Routes Illegally Installed: 92
+Legitimate Route Installs : 503
+Routes Illegally Installed: 0
 FRR Parser Crashes        : 0
 -----------------------------------------------------------------------
-Unexpected Protocol Deviations: 857
+Unexpected Protocol Deviations: 2
 
-=> VERDICT: 857 Protocol Deviations Found.
+=> VERDICT: 2 Protocol Deviations Found.
 ```
 
 If the `RFC Compliance Deviations` counter increments, it means FRR's behavior deviates from strict RFC 7606 expectations (e.g., dropping the session instead of doing a Treat-As-Withdraw, or illegally installing a malformed optional attribute). The fuzzer will output the specific **Test IDs** (e.g., `V2-45`) so you can isolate and reproduce the exact broken payload. A detailed JSON file (`parity_report_comprehensive.json`) will also be generated containing the exact hex arguments used.
