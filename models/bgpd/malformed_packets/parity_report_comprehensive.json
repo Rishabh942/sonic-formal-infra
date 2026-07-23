@@ -1,1 +1,26 @@
-[]
+[
+  {
+    "test_id": "V3-20-slot4",
+    "payload_args": {
+      "flags4": 192,
+      "type4": 16,
+      "len4": 8,
+      "payload_hex": "00"
+    },
+    "rfc_expected": "VALID",
+    "frr_actual": "TREAT_AS_WITHDRAW",
+    "oracle_state": "VALID"
+  },
+  {
+    "test_id": "V3-21-slot4",
+    "payload_args": {
+      "flags4": 192,
+      "type4": 8,
+      "len4": 4,
+      "payload_hex": "0000000000000000"
+    },
+    "rfc_expected": "VALID",
+    "frr_actual": "TREAT_AS_WITHDRAW",
+    "oracle_state": "VALID"
+  }
+]

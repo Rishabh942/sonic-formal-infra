@@ -84,40 +84,62 @@ def perform_bgp_handshake(s):
         raise Exception("HandshakeError: FRR did not send KEEPALIVE.")
 
 def build_test_update(args, version, slot):
-    attr_bytes = b''
-    attrs_for_oracle = []
-    
-    # 1. AS_PATH (valid, 4-byte ASN compliant)
-    attr_bytes += struct.pack('!BBB', 64, 2, 6) + b'\x02\x01\x00\x00\xfd\xea'
-    attrs_for_oracle.append(BGPPathAttr(flags=64, type_code=2, length=6))
-    
-    # 2. NEXT_HOP (valid)
-    attr_bytes += struct.pack('!BBB', 64, 3, 4) + b'\x01\x01\x01\x01'
-    attrs_for_oracle.append(BGPPathAttr(flags=64, type_code=3, length=4))
-    
-    # 3. ORIGIN (valid, unless we are fuzzing Slot 1 in Suite 2)
-    if not (version == 2 and slot == 1):
-        attr_bytes += struct.pack('!BBB', 64, 1, 1) + b'\x00'
-        attrs_for_oracle.append(BGPPathAttr(flags=64, type_code=1, length=1))
-    
-    # 4. Fuzzed attribute (packed last)
+    # Fuzzed attribute
     f_flags = args[f"flags{slot}"]
     f_type = 1 if (version == 2 and slot == 1) else args[f"type{slot}"]
     f_len = args[f"len{slot}"]
     
-    attr_bytes += struct.pack('!BB', f_flags, f_type)
+    fuzz_bytes = struct.pack('!BB', f_flags, f_type)
     if f_flags & 0x10:
-        attr_bytes += struct.pack('!H', f_len)
+        fuzz_bytes += struct.pack('!H', f_len)
     else:
-        attr_bytes += struct.pack('!B', f_len)
-    
-    # Payload injection
+        fuzz_bytes += struct.pack('!B', f_len)
+        
     if "payload_hex" in args:
-        payload = bytes.fromhex(args["payload_hex"])
-        attr_bytes += payload
+        fuzz_bytes += bytes.fromhex(args["payload_hex"])
     else:
-        attr_bytes += b'\x00' * f_len
-    attrs_for_oracle.append(BGPPathAttr(flags=f_flags, type_code=f_type, length=f_len))
+        fuzz_bytes += b'\x00' * f_len
+    fuzz_obj = BGPPathAttr(flags=f_flags, type_code=f_type, length=f_len)
+    
+    # Mandatory attributes
+    as_path_bytes = struct.pack('!BBB', 64, 2, 6) + b'\x02\x01\x00\x00\xfd\xea'
+    as_path_obj = BGPPathAttr(flags=64, type_code=2, length=6)
+    
+    next_hop_bytes = struct.pack('!BBB', 64, 3, 4) + b'\x01\x01\x01\x01'
+    next_hop_obj = BGPPathAttr(flags=64, type_code=3, length=4)
+    
+    origin_bytes = struct.pack('!BBB', 64, 1, 1) + b'\x00'
+    origin_obj = BGPPathAttr(flags=64, type_code=1, length=1)
+    
+    # Construct sequence based on slot
+    attr_bytes = b''
+    attrs_for_oracle = []
+    
+    if slot == 1:
+        attr_bytes += fuzz_bytes
+        attrs_for_oracle.append(fuzz_obj)
+        
+    attr_bytes += as_path_bytes
+    attrs_for_oracle.append(as_path_obj)
+    
+    if slot == 2:
+        attr_bytes += fuzz_bytes
+        attrs_for_oracle.append(fuzz_obj)
+        
+    attr_bytes += next_hop_bytes
+    attrs_for_oracle.append(next_hop_obj)
+    
+    if slot == 3:
+        attr_bytes += fuzz_bytes
+        attrs_for_oracle.append(fuzz_obj)
+        
+    if not (version == 2 and slot == 1):
+        attr_bytes += origin_bytes
+        attrs_for_oracle.append(origin_obj)
+        
+    if slot == 4:
+        attr_bytes += fuzz_bytes
+        attrs_for_oracle.append(fuzz_obj)
     
     # Build UPDATE with NLRI (10.0.0.0/24)
     nlri_bytes = b'\x18\x0a\x00\x00'
@@ -182,6 +204,10 @@ def evaluate_result(oracle_res, notification_received, is_active, installed, ver
             if oracle_res == ParseResult.AFI_SAFI_DISABLE:
                 frr_result = "AFI_SAFI_DISABLE"
                 results_tally["AFI_SAFI_DISABLE"] += 1
+            elif oracle_res == ParseResult.IMPL_CHOICE:
+                # We can't perfectly infer which soft error it chose, so we map to generic TREAT_AS_WITHDRAW for tracking
+                frr_result = "TREAT_AS_WITHDRAW"
+                results_tally["TREAT_AS_WITHDRAW"] += 1
             else:
                 frr_result = "TREAT_AS_WITHDRAW"
                 results_tally["TREAT_AS_WITHDRAW"] += 1
@@ -194,6 +220,11 @@ def evaluate_result(oracle_res, notification_received, is_active, installed, ver
         oracle_mapped = "ATTRIBUTE_DISCARD"
     elif oracle_res == ParseResult.AFI_SAFI_DISABLE:
         oracle_mapped = "AFI_SAFI_DISABLE"
+    elif oracle_res == ParseResult.IMPL_CHOICE:
+        if frr_result in ("SESSION_RESET", "AFI_SAFI_DISABLE", "TREAT_AS_WITHDRAW"):
+            oracle_mapped = frr_result
+        else:
+            oracle_mapped = "IMPL_CHOICE"
     else:
         oracle_mapped = "TREAT_AS_WITHDRAW"
                     
@@ -215,8 +246,6 @@ def evaluate_result(oracle_res, notification_received, is_active, installed, ver
 
 def execute_comprehensive_suite():
     print("[*] Starting Master Comprehensive Dynamic Fuzzer + Parity Engine")
-    print("[!] Scope Limitation: Fuzzed attributes are always packed LAST, after valid mandatory attributes.")
-    print("    This isolates the fuzzed variable but does not test malformed attributes in the first or middle positions.")
     
     # Load 3-attribute dictionary (Version 1)
     test_args_v1 = []

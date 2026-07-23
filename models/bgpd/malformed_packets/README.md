@@ -11,7 +11,7 @@ In this repository, we construct a formal model that acts as a "source of truth"
 How the pieces fit together for the **BGP Malformed Packets** project:
 - **`bgp_oracle.py`**: The formal reference implementation (Oracle). It reads incoming BGP path attributes and models strict logical branching outlined by RFC 4271 and RFC 7606 (e.g., when to trigger a Session Reset vs Attribute Discard).
 - **`run_parity_fuzzer.py`**: The engine driving the parity checks. It loads generated test dictionaries from `tests/`, connects over a socket to a live FRR daemon (e.g. `127.0.0.1:1179`), performs a BGP handshake, and ships the fuzzed packets. Finally, it observes if FRR crashed, tore down the session, or gracefully discarded attributes, comparing these live results precisely against the `bgp_oracle.py` expectations.
-- **`coverage.py`**: Wraps the execution of `run_parity_fuzzer.py` using Python's `coverage` tool configured for strict **branch coverage**. This ensures that generated test cases cover 100% of all possible `if/else` edges (both True and False paths) inside the `bgp_oracle.py` specification, validating the thoroughness of the fuzzer.
+- **`testing/coverage.py`**: Wraps the execution of `run_parity_fuzzer.py` using Python's `coverage` tool configured for strict **branch coverage**. This ensures that generated test cases cover 100% of all possible `if/else` edges (both True and False paths) inside the `bgp_oracle.py` specification, validating the thoroughness of the fuzzer.
 
 ## 🚀 Prerequisites
 
@@ -38,7 +38,7 @@ cd sonic-formal-infra/models/bgpd/malformed_packets
 **What the setup script does:**
 - Downloads the `quay.io/frrouting/frr:10.0.1` Docker image.
 - Spins up a container named `frr-lab` and exposes BGP port `179` to `1179` on your localhost.
-- Automatically injects the necessary configuration to enable `bgpd` and configures it to peer with our Python fuzzer via AS 65002.
+- Automatically injects the necessary configuration to enable `bgpd` and configures it to peer with our Python fuzzer via AS 65002. (Note: `setup_frr_legacy.sh` is provided for FRR v7.5.0, but `setup_frr_container.sh` includes `disable-connected-check` and `ebgp-multihop 255` configurations required for the latest FRR versions to successfully accept fuzzed eBGP connections).
 
 ---
 
@@ -72,7 +72,7 @@ To prove that our fuzzing payloads rigorously exercise the logic inside the form
 
 ```bash
 cd ../../../ # Go back to sonic-formal-infra root
-PYTHONPATH=. python3 -m models.bgpd.malformed_packets.coverage
+PYTHONPATH=. python3 -m models.bgpd.malformed_packets.testing.coverage
 ```
 
 This will run all generated test cases against `bgp_oracle.py` and output a terminal coverage report.
