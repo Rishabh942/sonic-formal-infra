@@ -1,0 +1,8 @@
+# Fuzzer Output & Logs
+parity_report*.json
+*.log
+
+# Crosshair Output & Logs
+attr_argdict*.txt
+attr_crosshair.log
+.crosshair/
