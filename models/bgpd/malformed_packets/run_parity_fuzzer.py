@@ -20,6 +20,8 @@ def build_bgp_open():
     import socket as _sock
     opt_params = b''
     opt_params += struct.pack('!BB', 2, 6) + struct.pack('!BB', 1, 4) + struct.pack('!HBB', 1, 0, 1)  # MP-BGP IPv4
+    opt_params += struct.pack('!BB', 2, 6) + struct.pack('!BB', 1, 4) + struct.pack('!HBB', 2, 0, 1)  # MP-BGP IPv6
+    opt_params += struct.pack('!BB', 2, 6) + struct.pack('!BB', 1, 4) + struct.pack('!HBB', 1, 0, 128) # MP-BGP VPNv4
     opt_params += struct.pack('!BB', 2, 2) + struct.pack('!BB', 128, 0)  # Route Refresh (old)
     opt_params += struct.pack('!BB', 2, 2) + struct.pack('!BB', 2, 0)    # Route Refresh
     opt_params += struct.pack('!BB', 2, 2) + struct.pack('!BB', 70, 0)   # Enhanced Route Refresh
@@ -96,20 +98,22 @@ def build_test_update(args, version, slot):
         fuzz_bytes += struct.pack('!B', f_len)
         
     if "payload_hex" in args:
-        fuzz_bytes += bytes.fromhex(args["payload_hex"])
+        val_bytes = bytes.fromhex(args["payload_hex"])
+        fuzz_bytes += val_bytes
     else:
-        fuzz_bytes += b'\x00' * f_len
-    fuzz_obj = BGPPathAttr(flags=f_flags, type_code=f_type, length=f_len)
+        val_bytes = b'\x00' * f_len
+        fuzz_bytes += val_bytes
+    fuzz_obj = BGPPathAttr(flags=f_flags, type_code=f_type, length=f_len, value=val_bytes)
     
     # Mandatory attributes
     as_path_bytes = struct.pack('!BBB', 64, 2, 6) + b'\x02\x01\x00\x00\xfd\xea'
-    as_path_obj = BGPPathAttr(flags=64, type_code=2, length=6)
+    as_path_obj = BGPPathAttr(flags=64, type_code=2, length=6, value=b'\x02\x01\x00\x00\xfd\xea')
     
     next_hop_bytes = struct.pack('!BBB', 64, 3, 4) + b'\x01\x01\x01\x01'
-    next_hop_obj = BGPPathAttr(flags=64, type_code=3, length=4)
+    next_hop_obj = BGPPathAttr(flags=64, type_code=3, length=4, value=b'\x01\x01\x01\x01')
     
     origin_bytes = struct.pack('!BBB', 64, 1, 1) + b'\x00'
-    origin_obj = BGPPathAttr(flags=64, type_code=1, length=1)
+    origin_obj = BGPPathAttr(flags=64, type_code=1, length=1, value=b'\x00')
     
     # Construct sequence based on slot
     attr_bytes = b''

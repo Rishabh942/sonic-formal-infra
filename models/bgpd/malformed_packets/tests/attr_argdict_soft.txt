@@ -440,3 +440,8 @@
 {'flags1': 0, 'len1': 0, 'flags4': 4, 'type4': 128, 'len4': 0}
 {'flags1': 0, 'len1': 0, 'flags4': 5, 'type4': 128, 'len4': 0}
 {'flags1': 0, 'len1': 0, 'flags4': 7, 'type4': 128, 'len4': 0}
+{'flags1': 64, 'len1': 1, 'payload_hex1': '00', 'flags4': 64, 'type4': 2, 'len4': 3, 'payload_hex': '020500'}
+{'flags1': 64, 'len1': 1, 'payload_hex1': '00', 'flags4': 64, 'type4': 2, 'len4': 3, 'payload_hex': '050000'}
+{'flags1': 64, 'len1': 1, 'payload_hex1': '00', 'flags4': 144, 'type4': 14, 'len4': 4, 'payload_hex': '00010104'}
+{'flags1': 64, 'len1': 1, 'payload_hex1': '00', 'flags4': 144, 'type4': 14, 'len4': 6, 'payload_hex': '000101040102'}
+{'flags1': 64, 'len1': 1, 'payload_hex1': '00', 'flags4': 144, 'type4': 15, 'len4': 2, 'payload_hex': '0001'}

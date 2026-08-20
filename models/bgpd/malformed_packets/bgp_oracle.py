@@ -26,6 +26,7 @@ class BGPPathAttr:
     flags: int
     type_code: int
     length: int
+    value: Optional[bytes] = None
 
 def keep_most_severe(new_result: ParseResult, current_result: ParseResult) -> ParseResult:
     """
@@ -71,6 +72,20 @@ def parse_attributes(attrs: List[BGPPathAttr], is_ibgp: bool = False, impl_choic
             seen_as_path = True
             if is_optional or not is_transitive:
                 final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
+            elif attr.value is not None:
+                # Basic framing check for AS_PATH
+                idx = 0
+                while idx < len(attr.value):
+                    if idx + 1 >= len(attr.value):
+                        final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
+                        break
+                    seg_type = attr.value[idx]
+                    seg_len = attr.value[idx+1]
+                    if seg_type not in (1, 2) or idx + 2 + seg_len * 2 > len(attr.value):
+                        # Treat as withdraw if framing is wrong (assuming 2-byte ASNs for simplicity here, though 4-byte also possible)
+                        final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
+                        break
+                    idx += 2 + seg_len * 2
         elif attr.type_code == 3: # NEXT_HOP
             seen_nexthop = True
             if is_optional or not is_transitive or attr.length != 4:
@@ -103,10 +118,19 @@ def parse_attributes(attrs: List[BGPPathAttr], is_ibgp: bool = False, impl_choic
             if not is_optional or is_transitive:
                 choice = ParseResult(impl_choice.mp_nlri_choice.value) if impl_choice else ParseResult.IMPL_CHOICE
                 final_result = keep_most_severe(choice, final_result)
+            if attr.value is not None:
+                if len(attr.value) < 5: # Minimum AFI, SAFI, NH Len
+                    final_result = keep_most_severe(ParseResult.AFI_SAFI_DISABLE, final_result)
+                else:
+                    nh_len = attr.value[3]
+                    if len(attr.value) < 5 + nh_len:
+                        final_result = keep_most_severe(ParseResult.AFI_SAFI_DISABLE, final_result)
         elif attr.type_code == 15: # MP_UNREACH_NLRI
             if not is_optional or is_transitive:
                 choice = ParseResult(impl_choice.mp_nlri_choice.value) if impl_choice else ParseResult.IMPL_CHOICE
                 final_result = keep_most_severe(choice, final_result)
+            if attr.value is not None and len(attr.value) < 3: # Minimum AFI, SAFI
+                final_result = keep_most_severe(ParseResult.AFI_SAFI_DISABLE, final_result)
         elif attr.type_code == 16: # EXTENDED_COMMUNITIES
             if not is_optional or not is_transitive or (attr.length % 8 != 0):
                 final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
