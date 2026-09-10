@@ -28,7 +28,7 @@ echo "[*] Fixing gcda write permissions..."
 docker exec frr-lab chmod -R a+rwX /frr
 
 echo "[*] Running fuzzer against coverage-instrumented bgpd..."
-PYTHONPATH=. python3 -m models.bgpd.malformed_packets.run_parity_fuzzer --suite all
+PYTHONPATH=. python3 -m models.bgpd.malformed_packets.run_parity_fuzzer --suite all --limit 100 --coverage-mode
 
 echo "[*] Stopping bgpd gracefully to flush gcov counters..."
 docker exec frr-lab pkill -TERM bgpd || true

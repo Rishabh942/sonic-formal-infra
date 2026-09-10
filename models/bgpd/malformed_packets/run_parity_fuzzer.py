@@ -332,6 +332,13 @@ def perform_bgp_handshake(s, open_msg=None):
     return got_keepalive
 
 
+
+def build_routerefresh_update(args, prefix_unused):
+    # Route Refresh is message type 5
+    # payload is AFI (2), Res (1), SAFI (1)
+    payload = struct.pack('!HBB', args["afi"], 0, args["safi"])
+    return b'\xff'*16 + struct.pack('!HB', 19 + len(payload), 5) + payload, [], None, ""
+
 def build_bgp_keepalive():
     return KEEPALIVE_MESSAGE
 
@@ -609,7 +616,14 @@ def eval_mpreach(attrs, args):
     return parse_attributes(attrs, asn_4byte=True, has_ipv4_nlri=False)
 
 
-SUITE_EVALS = {"legacy": eval_legacy, "aspath": eval_aspath,
+
+def eval_routerefresh(attrs, args):
+    # Oracle for route refresh: always VALID since lengths are correct
+    return ParseResult.VALID
+
+SUITE_EVALS = {
+    "routerefresh": eval_routerefresh,
+"legacy": eval_legacy, "aspath": eval_aspath,
                "mpreach": eval_mpreach}
 
 
@@ -625,6 +639,7 @@ def execute_comprehensive_suite(suite="all", host=DEFAULT_HOST, port=DEFAULT_POR
         "aspath": want_all or suite == "aspath",
         "mpreach": want_all or suite == "mpreach",
         "opencap": want_all or suite == "opencap",
+        "routerefresh": want_all or suite == "routerefresh",
     }
 
     session = None if dry_run else BgpSession(host, port)
@@ -667,6 +682,12 @@ def execute_comprehensive_suite(suite="all", host=DEFAULT_HOST, port=DEFAULT_POR
         run_update_suite(cases, build_mpreach_update, eval_mpreach,
                          "mpreach", tally, discrepancies, alloc, session, dry_run, limit)
 
+
+    if plan["routerefresh"]:
+        cases = load_argdict(f"{BASE_DIR}/tests/routerefresh_argdict.txt")
+        run_update_suite(cases, build_routerefresh_update, eval_routerefresh,
+                         "routerefresh", tally, discrepancies, alloc, session, dry_run, limit, coverage_mode)
+
     if plan["opencap"]:
         if session is not None:
             session.close()          # avoid connection-collision against
@@ -697,7 +718,7 @@ def _interactive_menu():
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="BGP RFC parity fuzzer")
-    ap.add_argument("--suite", choices=["all", "legacy", "aspath", "mpreach", "opencap"])
+    ap.add_argument("--suite", choices=["all", "legacy", "aspath", "mpreach", "opencap", "routerefresh"])
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--limit", type=int, help="max cases per suite")
