@@ -23,7 +23,5 @@ def test_attribute_sequence_soft(
         BGPPathAttr(64, 3, 4, b'\x01\x01\x01\x01'),              # NEXT_HOP: Type 3, flags=64 (valid), len=4
         BGPPathAttr(flags4, type4, len4, val4)    # OPTIONAL/4th attribute
     ]
-    res = parse_attributes(attrs)
-    if res.name == "INVALID_INPUTS":
-        return "INVALID_INPUTS"
+    res = parse_attributes(attrs, asn_4byte=True)   # our OPEN negotiates AS4
     return res.name

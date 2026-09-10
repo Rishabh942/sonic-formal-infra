@@ -27,7 +27,5 @@ def test_attribute_sequence_extended(
         BGPPathAttr(flags3, type3, len3)
     ]
     
-    res = parse_attributes(attrs)
-    if res.name == "INVALID_INPUTS":
-        return "INVALID_INPUTS"
+    res = parse_attributes(attrs, asn_4byte=True)   # our OPEN negotiates AS4
     return res.name

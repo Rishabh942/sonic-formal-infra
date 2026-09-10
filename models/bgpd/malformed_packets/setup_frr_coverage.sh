@@ -10,7 +10,7 @@ docker stop frr-lab 2>/dev/null
 docker rm frr-lab 2>/dev/null
 
 # Start FRR container with port mapping
-docker run -d --privileged --name frr-lab -p 1179:179 frr-coverage-lab
+docker run -d --privileged --name frr-lab -p 127.0.0.1:1179:179 frr-coverage-lab
 
 echo "[*] Waiting for container to initialize..."
 sleep 3

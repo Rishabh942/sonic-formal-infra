@@ -1,0 +1,49 @@
+{
+ "description": "post-overhaul baseline: full parity suite (2849 cases) vs FRR 10.0.1 --enable-gcov",
+ "files": [
+  {
+   "name": "bgp_attr.c",
+   "lf": 2475,
+   "lh": 821,
+   "bf": 1413,
+   "bh": 0,
+   "fn": 115,
+   "fh": 47
+  },
+  {
+   "name": "bgp_open.c",
+   "lf": 959,
+   "lh": 421,
+   "bf": 534,
+   "bh": 0,
+   "fn": 23,
+   "fh": 16
+  },
+  {
+   "name": "bgp_packet.c",
+   "lf": 1721,
+   "lh": 463,
+   "bf": 1092,
+   "bh": 0,
+   "fn": 46,
+   "fh": 22
+  },
+  {
+   "name": "bgp_route.c",
+   "lf": 7606,
+   "lh": 1374,
+   "bf": 6051,
+   "bh": 0,
+   "fn": 228,
+   "fh": 70
+  }
+ ],
+ "total": {
+  "lines": 3079,
+  "lines_total": 12761,
+  "branches": 0,
+  "branches_total": 9090,
+  "funcs": 155,
+  "funcs_total": 412
+ }
+}
