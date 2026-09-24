@@ -78,7 +78,7 @@ def enumerate_space():
     for c1, l1, f1 in cap_points:                                   # single
         yield "opencap", {"num_caps": 1, "code1_idx": c1, "len1": l1,
                           "fill1": f1, "code2_idx": 0, "len2": 0, "fill2": 0}
-    anchor = {"num_caps": 2, "code1_idx": 11, "len1": 4, "fill1": 1}  # code 64=AS4
+    anchor = {"num_caps": 2, "code1_idx": 10, "len1": 4, "fill1": 1}  # code 65=AS4
     for c2, l2, f2 in cap_points:                                   # paired
         yield "opencap", {**anchor, "code2_idx": c2, "len2": l2, "fill2": f2}
     # Interaction probes: broken framing on one or both caps.

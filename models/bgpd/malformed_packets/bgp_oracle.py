@@ -70,13 +70,21 @@ def _attr_transitive(flags: int) -> bool:
 
 # ── Structural helpers ───────────────────────────────────────────────────────
 
-def scan_as_path(value: bytes, asn_size: int, allow_confed: bool) -> bool:
+def scan_as_path(value: bytes, asn_size: int, allow_confed: bool,
+                 enforce_first_as: Optional[int] = None) -> bool:
     """RFC 4271 §4.3 AS_PATH framing walk; asn_size is 2 or 4 bytes per ASN.
 
-    Segment types: AS_SEQUENCE(1), AS_SET(2), AS_CONFED_SEQUENCE(3),
+    Segment types: AS_SET(1), AS_SEQUENCE(2), AS_CONFED_SEQUENCE(3),
     AS_CONFED_SET(4). Confed segments from a non-confederation peer mean the
     route leaked out of a confed - treat-as-withdraw (RFC 5065 §4.2 /
     RFC 7606 §7.4)."""
+    # Optional eBGP policy in the FRR lab; it is not a wire syntax rule.
+    if enforce_first_as is not None:
+        if (len(value) < 2 + asn_size or value[0] != 2 or value[1] == 0
+                or int.from_bytes(value[2:2 + asn_size], 'big')
+                != enforce_first_as):
+            return False
+
     idx = 0
     while idx < len(value):
         if idx + 2 > len(value):
@@ -141,7 +149,8 @@ def parse_attributes(attrs: List[BGPPathAttr],
                      impl_choice: Optional[ImplChoice] = None,
                      asn_4byte: bool = False,
                      has_ipv4_nlri: bool = True,
-                     allow_confed: bool = False) -> ParseResult:
+                     allow_confed: bool = False,
+                     enforce_first_as: Optional[int] = None) -> ParseResult:
     """Model RFC 4271 §6.3 / RFC 7606 UPDATE attribute processing.
 
     asn_4byte       peer negotiated 4-byte ASN (RFC 6793); AS_PATH carries
@@ -151,6 +160,7 @@ def parse_attributes(attrs: List[BGPPathAttr],
                     MP_REACH provides it (RFC 4760 §5: when MP_REACH is used
                     for a route, NEXT_HOP SHALL be ignored / not required).
     allow_confed    peer is inside our confederation (AS_CONFED_* legal).
+    enforce_first_as  configured eBGP policy; None omits this lab constraint.
 
     value=None means "length-only test case" - value-level checks are
     skipped (mirrors the legacy argdict suites)."""
@@ -201,7 +211,8 @@ def parse_attributes(attrs: List[BGPPathAttr],
             if is_optional or not is_transitive:
                 fault(ParseResult.TREAT_AS_WITHDRAW)
             elif val is not None:
-                if not scan_as_path(val, 4 if asn_4byte else 2, allow_confed):
+                if not scan_as_path(val, 4 if asn_4byte else 2, allow_confed,
+                                    enforce_first_as):
                     fault(ParseResult.TREAT_AS_WITHDRAW)
         elif tc == 3:  # NEXT_HOP - well-known mandatory; malformed => withdraw
             seen_next_hop = True
@@ -271,7 +282,9 @@ def parse_attributes(attrs: List[BGPPathAttr],
                 fault(ParseResult.TREAT_AS_WITHDRAW)
         elif tc == 17:  # AS4_PATH (RFC 6793) - optional transitive
             if not is_optional or not is_transitive:
-                fault(ParseResult.ATTRIBUTE_DISCARD)
+                # RFC 7606 §3.c: an Optional/Transitive flag conflict
+                # makes the entire UPDATE treat-as-withdraw.
+                fault(ParseResult.TREAT_AS_WITHDRAW)
             elif val is not None:
                 if not scan_as_path(val, 4, allow_confed):
                     # Malformed AS4_PATH: discard the attribute, keep the
@@ -328,14 +341,14 @@ def parse_attributes(attrs: List[BGPPathAttr],
 # capability too short to carry its mandatory fields makes the whole OPEN
 # malformed (OPEN Message Error, RFC 4271 §6.2). Minimums:
 #   1  MP-BGP          (RFC 4760 §8): 4-octet records -> len >= 4, len % 4 == 0
-#   64 AS4             (RFC 6793 §4): exactly 4 octets
-#   65 GracefulRestart (RFC 4724):    >= 2 (flags + time, optional tuples)
+#   64 GracefulRestart (RFC 4724 §3): 2 octets + zero or more 4-octet tuples
+#   65 AS4             (RFC 6793 §4): exactly 4 octets
 #   73 AddPath         (RFC 7911):    4-octet records -> len >= 4, len % 4 == 0
 #   79 Role            (RFC 9234 §4): exactly 1 octet
 _CAP_SEMANTIC_LEN = {
     1: lambda n: n >= 4 and n % 4 == 0,
-    64: lambda n: n == 4,
-    65: lambda n: n >= 2,
+    64: lambda n: n >= 2 and (n - 2) % 4 == 0,
+    65: lambda n: n == 4,
     73: lambda n: n >= 4 and n % 4 == 0,
     79: lambda n: n == 1,
 }

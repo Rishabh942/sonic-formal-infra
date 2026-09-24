@@ -5,7 +5,7 @@
 #   ./setup_frr_coverage.sh
 #
 # Usage:
-#   PYTHONPATH=. ./collect_c_coverage.sh [--baseline]
+#   PYTHONPATH=. ./collect_c_coverage.sh [--baseline] [--suite all|grrestart] [--limit N]
 #
 # --baseline saves coverage_baseline.json for later comparison; without it a
 # summary is printed and diffed against an existing baseline.
@@ -21,14 +21,24 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."   # repo root
 
-MODE="${1:-run}"
-FILES='*/bgpd/bgp_attr.c */bgpd/bgp_open.c */bgpd/bgp_packet.c */bgpd/bgp_route.c'
+MODE="run"
+SUITE="all"
+LIMIT="100"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --baseline) MODE="--baseline"; shift ;;
+    --suite) SUITE="$2"; shift 2 ;;
+    --limit) LIMIT="$2"; shift 2 ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+FILES='*/bgpd/bgp_attr.c */bgpd/bgp_fsm.c */bgpd/bgp_open.c */bgpd/bgp_packet.c */bgpd/bgp_route.c'
 
 echo "[*] Fixing gcda write permissions..."
 docker exec frr-lab chmod -R a+rwX /frr
 
 echo "[*] Running fuzzer against coverage-instrumented bgpd..."
-PYTHONPATH=. python3 -m models.bgpd.malformed_packets.run_parity_fuzzer --suite all --limit 100 --coverage-mode
+PYTHONPATH=. python3 -m models.bgpd.malformed_packets.run_parity_fuzzer --suite "$SUITE" --limit "$LIMIT" --coverage-mode --fail-on-deviation --out /tmp/bgpd_coverage_report.json
 
 echo "[*] Stopping bgpd gracefully to flush gcov counters..."
 docker exec frr-lab pkill -TERM bgpd || true
@@ -80,6 +90,10 @@ else:
     bt = base["total"]
     print(f"[i] baseline: lines {bt['lines']}/{bt['lines_total']}, "
           f"funcs {bt['funcs']}/{bt['funcs_total']}")
-    print(f"[+] delta: lines {100*(tl-bt['lines'])/+max(tlf,1):+.1f}pp, "
-          f"funcs {100*(tf-bt['funcs'])/max(tfn,1):+.1f}pp")
+    if tlf != bt['lines_total'] or tfn != bt['funcs_total']:
+        print("[i] committed baseline has a different file scope; "
+              "use two lcov captures with compare_c_coverage.py")
+    else:
+        print(f"[+] delta: lines {100*(tl-bt['lines'])/max(tlf,1):+.1f}pp, "
+              f"funcs {100*(tf-bt['funcs'])/max(tfn,1):+.1f}pp")
 EOF

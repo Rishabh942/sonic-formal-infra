@@ -30,14 +30,14 @@ CAP_CODES = (
     1,    # MP-BGP (RFC 4760)
     2,    # Route Refresh (RFC 2918)
     3,    # Outbound Route Filtering (RFC 5291)
-    4,    # Graceful Restart (RFC 4724)
+    4,    # Other capability code (outside this oracle's semantic checks)
     5,    # Capabilities Advertisement (obsolete, RFC 5492 §4.3)
     6,    # Multiple Routes to a Destination (obsolete)
     7,    # Extended Next Hop Encoding (RFC 5549)
     8,    # BGPsec (RFC 8205)
     9,    # Multiple Labels (RFC 8277)
-    64,   # 4-octet ASN (RFC 6793)
-    65,   # Graceful Restart (RFC 4724)
+    64,   # Graceful Restart (RFC 4724)
+    65,   # 4-octet ASN (RFC 6793)
     69,   # FQDN? (historical draft; unknown-ish)
     70,   # Enhanced Route Refresh (RFC 7313)
     71,   # Long-lived Graceful Restart (draft)
@@ -78,7 +78,7 @@ def build_as_path_value(seg1_type: int, seg1_count: int,
                         extra_len: int = 0) -> bytes:
     """Concrete AS_PATH value from bounded symbolic parameters.
 
-    seg types: 0 => segment absent, else AS_SEQUENCE(1)/AS_SET(2)/
+    seg types: 0 => segment absent, else AS_SET(1)/AS_SEQUENCE(2)/
     AS_CONFED_SEQUENCE(3)/AS_CONFED_SET(4). extra_len pads (+) or truncates
     (-) the value so declared-length games stay in-band and parser-safe.
 
@@ -137,3 +137,16 @@ def build_capability_value(code: int, cap_len: int, fill: bool) -> bytes:
 def wrap_capability(cap_body: bytes) -> bytes:
     """Wrap a capability body into an optional parameter (type 2)."""
     return struct.pack('!BB', 2, len(cap_body)) + cap_body
+
+
+def build_graceful_restart_value(restart_flags: int, restart_time: int,
+                                 families=()) -> bytes:
+    """RFC 4724 capability 64: flags/time followed by four-byte AFI/SAFI tuples.
+
+    Families are (afi, safi, flags). Reserved flag bits are preserved so the
+    receiver's ignore behavior can be exercised, not filtered by the builder.
+    """
+    value = struct.pack('!H', ((restart_flags & 0xF) << 12) | (restart_time & 0xFFF))
+    for afi, safi, flags in families:
+        value += struct.pack('!HBB', afi, safi, flags)
+    return value

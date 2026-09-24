@@ -1,10 +1,12 @@
 #!/bin/bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "[*] Setting up FRRouting Docker Container for Parity Testing..."
 
 # Stop and remove existing container if it exists
-docker stop frr-lab 2>/dev/null
-docker rm frr-lab 2>/dev/null
+docker stop frr-lab 2>/dev/null || true
+docker rm frr-lab 2>/dev/null || true
 
 # Start FRR container with port mapping
 docker run -d --privileged --name frr-lab -p 127.0.0.1:1179:179 quay.io/frrouting/frr:10.0.1
@@ -20,6 +22,7 @@ cat << 'EOF' > frr.conf.tmp
 log file /tmp/bgpd.log debugging
  router bgp 65001
   no bgp ebgp-requires-policy
+  bgp graceful-restart
   neighbor FUZZ peer-group
   neighbor FUZZ remote-as 65002
   neighbor FUZZ disable-connected-check
@@ -34,7 +37,7 @@ log file /tmp/bgpd.log debugging
 EOF
 
 docker cp frr.conf.tmp frr-lab:/etc/frr/frr.conf
-docker cp models/bgpd/malformed_packets/dummy_peer.py frr-lab:/frr/dummy_peer.py
+docker cp "$SCRIPT_DIR/dummy_peer.py" frr-lab:/frr/dummy_peer.py
 rm frr.conf.tmp
 
 # Restart FRR container to apply daemons and config changes

@@ -1,22 +1,25 @@
 # BGP Formal Verification Parity Fuzzer
 
-This module provides a formal verification testing suite that mathematically proves whether an open-source BGP parser (FRRouting) complies with the error-handling specifications detailed in **RFC 4271 (BGP-4)** and **RFC 7606 (Revised Error Handling)**.
+This module combines executable RFC models, symbolic and bounded test generation, and live conformance checks against FRRouting for the BGP error-handling rules in **RFC 4271**, **RFC 7606**, and **RFC 4724**. It establishes agreement for the generated cases, not a proof of correctness for every FRR behavior.
 
-By leveraging an SMT solver (Z3 via CrossHair), we condensed the infinite space of malformed BGP Update payloads into a mathematically complete set of exact edge cases (Suites 1 & 2). We also included directed semantic fuzzing for Community attributes (Suite 3). This suite fires these payloads at a live FRR daemon and asserts that FRR's physical C-parser mimics our Python Oracle (RFC 7606).
+CrossHair and Z3 generate edge cases for bounded packet parameters in the earlier suites. Directed structural cases cover OPEN and UPDATE framing, while a finite Graceful Restart model explores route-state transitions. The live harness sends these packets to FRR and compares observable behavior with the applicable reference model.
 
 ## Core Architecture and File Explanations
 
 In this repository, we construct a formal model that acts as a "source of truth", and then we compare the outputs of our model with a live implementation (e.g. FRRouting) by sending generated packets over a local socket.
 
 How the pieces fit together for the **BGP Malformed Packets** project:
-- **`generate_rfc4271_suite.py` / `generate_rfc7606_suite.py`**: Test suite generators that act as entry points for CrossHair. They declare "free variables" (e.g., `flags1`, `type4`, `len4`) representing the raw bytes of BGP attributes. CrossHair symbolically executes the oracle against these variables, exploring every logical branch, and solves for the exact concrete integer values (e.g., `{'flags1': 144, 'type4': 14, 'len4': 0}`) required to trigger each path. These instantiated arguments are saved as dictionaries in `tests/` and are later used to construct physical packets.
+- **`generate_rfc4271_suite.py` / `generate_rfc7606_suite.py`**: CrossHair entry points with symbolic BGP attribute parameters. Solved examples are saved as dictionaries in `tests/` and later used to construct physical packets. Coverage reports show which modeled branches those examples actually exercise.
 - **`generate_aspath_suite.py` / `generate_mpreach_suite.py` / `generate_opencap_suite.py`**: *Structural* generators. Instead of raw byte soup they declare bounded structural parameters - AS_PATH segment types/counts/ASN width, MP_REACH AFI/SAFI/nexthop framing, OPEN capability TLVs - so symbolic exploration stays cheap and test counts stay small.
+- **`graceful_restart.py`**: Directed RFC 4724 OPEN capability cases with correct code 64 encoding, restart/time boundaries, AFI/SAFI forwarding flags, duplicates, truncated tuples, and an IPv4 End-of-RIB UPDATE after successful handshakes. These cases run on fresh sessions through the same OPEN oracle and parity runner.
+- **`gr_stateful.py`**: Stateful GR helper scenarios that announce routes, disconnect, reconnect, refresh selected routes, send End-of-RIB, and check route retention and cleanup. The JSON report includes event order and wire hex for reproducing failures.
+- **`gr_model.py`**: Pure finite reference model for absent/active/stale routes. The stateful suite derives expected RIB observations from this model; `check_bounded_invariants(4)` exhaustively explores 549,920 transitions over two-route event sequences.
 - **`packet_builders.py`**: Single source of truth for turning dictionary arguments into wire structures. Both the generators (oracle side) and `run_parity_fuzzer.py` (wire side) import it, so what the oracle judges can never diverge from what FRR receives.
 - **`seed_structural_suites.py`**: Enumerates each structural space exhaustively offline, deduplicates on `(wire bytes, oracle verdict)` and stride-samples per verdict class (`--max-per-class`). Ships runnable dictionaries immediately without waiting on CrossHair; CrossHair re-derivation remains the canonical source.
 - **`bgp_oracle.py`**: The formal reference implementation (Oracle). It reads incoming BGP path attributes and models strict logical branching outlined by RFC 4271 and RFC 7606 (e.g., when to trigger a Session Reset vs Attribute Discard). Value-level checks cover ORIGIN values, NEXT_HOP martians, AS_PATH/AS4_PATH segment framing (2- vs 4-byte ASN), MP_REACH/MP_UNREACH structure, ATTR_SET inner length, PMSI_TUNNEL minimum size, OTC fixed length, and RFC 7606 §5 duplicate handling. Also hosts `parse_capabilities`, the RFC 5492 OPEN-parameter model.
 - **`run_parity_fuzzer.py`**: The engine driving the parity checks. It loads generated test dictionaries from `tests/`, connects over a socket to a live FRR daemon (e.g. `127.0.0.1:1179`), performs a BGP handshake, and ships the fuzzed packets. Finally, it observes if FRR crashed, tore down the session, or gracefully discarded attributes, comparing these live results precisely against the `bgp_oracle.py` expectations.
-- **`testing/coverage.py`**: Wraps the execution of `run_parity_fuzzer.py` using Python's `coverage` tool configured for strict **branch coverage**. This ensures that generated test cases cover 100% of all possible `if/else` edges (both True and False paths) inside the `bgp_oracle.py` specification, validating the thoroughness of the fuzzer.
-- **`collect_c_coverage.sh`**: Runs the full suite against the gcov-instrumented container (`setup_frr_coverage.sh` / `Dockerfile.coverage`), captures lcov data restricted to the target parsing files (`bgp_attr.c`, `bgp_packet.c`, `bgp_open.c`, `bgp_nlri.c`, `bgp_route.c`, `bgp_mp.c`), renders HTML into `coverage_html_c/`, and diffs line/function/branch percentages against `coverage_baseline.json`.
+- **`testing/coverage.py`**: Wraps the execution of `run_parity_fuzzer.py` using Python's `coverage` tool to measure branch coverage of the oracle.
+- **`collect_c_coverage.sh`**: Runs the selected suite against the gcov-instrumented container (`setup_frr_coverage.sh` / `Dockerfile.coverage`), captures lcov data for `bgp_attr.c`, `bgp_fsm.c`, `bgp_packet.c`, `bgp_open.c`, and `bgp_route.c`, and renders HTML into `coverage_html_c/`. Use two lcov captures and `compare_c_coverage.py` for an incremental comparison.
 
 ## 🚀 Prerequisites
 
@@ -90,15 +93,34 @@ PYTHONPATH=. python3 models/bgpd/malformed_packets/run_parity_fuzzer.py
 # Or scripted - all suites, or a single one, with a bounded case count:
 PYTHONPATH=. python3 models/bgpd/malformed_packets/run_parity_fuzzer.py --suite all
 PYTHONPATH=. python3 models/bgpd/malformed_packets/run_parity_fuzzer.py --suite aspath --limit 50
+PYTHONPATH=. python3 models/bgpd/malformed_packets/run_parity_fuzzer.py --suite grrestart
+PYTHONPATH=. python3 models/bgpd/malformed_packets/run_parity_fuzzer.py --suite grstate --fail-on-deviation --out /tmp/grstate-live.json
 
 # Offline sanity check (builds every packet + runs the oracle, no daemon):
 PYTHONPATH=. python3 models/bgpd/malformed_packets/run_parity_fuzzer.py --suite all --dry-run
 ```
 
-Suites: `legacy` (attribute dictionaries), `aspath`, `mpreach`, `opencap`, `all`.
+Suites: `legacy` (attribute dictionaries), `aspath`, `mpreach`, `opencap`, `routerefresh`, `grrestart`, `grstate`, `all`. `all_no_gr` is the measurement control.
+
+The Graceful Restart suite has 29 directed cases. Its two valid capability
+length classes are 2 bytes (helper only) and `2 + 4*n` bytes (AFI/SAFI
+tuples); truncated or partial tuples exercise OPEN error handling. The live
+runner additionally sends the four-byte IPv4 End-of-RIB UPDATE body after a
+successful handshake. The setup scripts enable `bgp graceful-restart` so FRR
+negotiates the feature during these tests. This suite checks parsing and
+End-of-RIB acceptance; it does not simulate retained routes across a daemon
+restart.
+
+The `grstate` suite checks stale-route retention, selective refresh, F-bit
+handling on reconnect, restart-time expiration, NOTIFICATION cleanup, and a
+non-GR control. A live FRR 10.0.1 run passed all six scenarios. Coverage mode
+sends the same wire traffic but skips `vtysh` assertions; use the normal live
+run to establish behavior. `--fail-on-deviation` exits nonzero on a mismatch
+or failed FRR connection. The JSON report retains the scenario's checks,
+event order, and wire hex for reproducing a failure.
 
 ### Phase 3: Branch Coverage Verification
-To prove that our fuzzing payloads rigorously exercise the logic inside the formal model, you can run the suite under strict branch coverage tracking. This ensures the fuzzer hits all possible True/False logical edges outlined by the RFCs:
+To measure which oracle branches the current corpus exercises, run:
 
 ```bash
 cd ../../../ # Go back to sonic-formal-infra root
@@ -111,10 +133,21 @@ This will run all generated test cases against `bgp_oracle.py` and output a term
 
 ```bash
 ./models/bgpd/malformed_packets/setup_frr_coverage.sh     # builds FRR 10.0.1 with --enable-gcov
-./models/bgpd/malformed_packets/collect_c_coverage.sh     # fuzzer + lcov capture + HTML + baseline diff
+./models/bgpd/malformed_packets/collect_c_coverage.sh     # fuzzer + lcov capture + HTML
+./models/bgpd/malformed_packets/collect_c_coverage.sh --suite grrestart --limit 29
 ```
 
-Run `collect_c_coverage.sh --baseline` first to record `coverage_baseline.json`; subsequent runs print the delta for lines/functions/branches over the six target files and write browsable HTML under `coverage_html_c/`.
+Run `collect_c_coverage.sh --baseline` to record `coverage_baseline.json`; subsequent runs print the delta for lines/functions when the tracked file scope matches and write browsable HTML under `coverage_html_c/`.
+For a comparable delta, use the same `--suite` and `--limit` and the same lab
+configuration for baseline and follow-up runs. The committed baseline predates
+this expansion and was collected under different harness behavior, so its
+printed delta is not an isolated measure of the new GR cases.
+For a controlled before/after measurement on one FRR build, run
+`all_no_gr --limit 100`, save `/tmp/frr_target.info`, then run
+`grstate --limit 6` and `grrestart --limit 29` and compare the captures with
+`compare_c_coverage.py`. See [GR_C_COVERAGE_REPORT.md](GR_C_COVERAGE_REPORT.md)
+for the measured result and exact commands, or [MEETING_BRIEF.md](MEETING_BRIEF.md)
+for a one-page summary.
 
 ### 📊 Understanding the Output
 The fuzzer runs in real-time, executing roughly 100 payloads per minute. It checks whether FRR responds with a strict `SESSION_RESET`, or correctly degrades the route via `Treat-as-Withdraw` / `AFI_SAFI_DISABLE`.
