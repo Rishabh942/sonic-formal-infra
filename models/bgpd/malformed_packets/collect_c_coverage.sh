@@ -1,100 +1,128 @@
-#!/bin/bash
-# Measure C-side (gcov) coverage of bgpd reached by the parity fuzzer.
-#
-# Requires the coverage-instrumented container:
-#   ./setup_frr_coverage.sh
-#
-# Usage:
-#   PYTHONPATH=. ./collect_c_coverage.sh [--baseline]
-#
-# --baseline saves coverage_baseline.json for later comparison; without it a
-# summary is printed and diffed against an existing baseline.
-#
-# How it works (each step matters):
-#   1. /frr must be world-writable - bgpd drops privileges to user "frr",
-#      and gcov silently fails to write .gcda into a root-owned tree.
-#   2. After the fuzzer finishes, bgpd is SIGTERMed: gcov counters are
-#      flushed to .gcda on process exit, not continuously.
-#   3. All lcov/genhtml steps run INSIDE the container (the host may not
-#      have lcov installed).
-
+#!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../../.."   # repo root
+SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd)
+container=frr-lab
+port=1179
+limit=100
+out_dir="$SCRIPT_DIR/coverage_html_c"
+baseline=false
 
-MODE="${1:-run}"
-if [[ "$MODE" != "run" && "$MODE" != "--baseline" ]]; then
-  echo "Usage: $0 [--baseline]" >&2
-  exit 2
-fi
-FILES='*/bgpd/bgp_attr.c */bgpd/bgp_open.c */bgpd/bgp_packet.c */bgpd/bgp_route.c'
+usage() {
+  cat <<'EOF'
+Usage: bash collect_c_coverage.sh [options]
+Reset counters, send the saved cases, and collect bgpd C coverage.
+Requires a running lab created by setup_frr_coverage.sh.
 
-echo "[*] Fixing gcda write permissions..."
-docker exec frr-lab chmod -R a+rwX /frr
-docker exec frr-lab lcov --zerocounters --directory /frr
+  --baseline        Save this run as the baseline for later comparisons
+  --container NAME  Container name (default: frr-lab)
+  --port PORT       Local BGP port (default: 1179)
+  --limit N         Maximum cases per suite (default: 100)
+  --out DIR         Report directory (default: coverage_html_c beside this script)
+  -h, --help        Show this help
 
-echo "[*] Running fuzzer against coverage-instrumented bgpd..."
-PYTHONPATH=. python3 -m models.bgpd.malformed_packets.run_parity_fuzzer --suite all --limit 100 --coverage-mode --fail-on-deviation
-
-echo "[*] Stopping bgpd gracefully to flush gcov counters..."
-docker exec frr-lab pkill -TERM bgpd || true
-sleep 4
-docker start frr-lab >/dev/null && sleep 3
-
-echo "[*] Capturing + extracting via lcov (in-container)..."
-docker exec frr-lab bash -ec "\
-  lcov --capture --directory /frr --output-file /tmp/coverage.info --rc lcov_branch_coverage=1 2>/dev/null >/dev/null; \
-  lcov --extract /tmp/coverage.info $FILES --output-file /tmp/target.info --rc lcov_branch_coverage=1 >/dev/null 2>&1; \
-  genhtml /tmp/target.info --output-directory /tmp/coverage_html_c --rc lcov_branch_coverage=1 >/dev/null 2>&1"
-docker cp frr-lab:/tmp/target.info /tmp/frr_target.info
-docker cp frr-lab:/tmp/coverage_html_c models/bgpd/malformed_packets/ >/dev/null
-
-FRR_REVISION=$(docker exec frr-lab git -C /frr rev-parse HEAD)
-python3 - "$MODE" "$FRR_REVISION" <<'EOF'
-import json, re, sys
-mode = sys.argv[1]
-txt = open("/tmp/frr_target.info").read()
-rows = []
-for sec in txt.split("end_of_record"):
-    m = re.search(r"^SF:(.+)$", sec, re.M)
-    if not m:
-        continue
-    def g(p):
-        mm = re.search(p, sec, re.M)
-        return int(mm.group(1)) if mm else 0
-    rows.append(dict(name=m.group(1).split("/")[-1], lf=g(r"LF:(\d+)"), lh=g(r"LH:(\d+)"),
-                     bf=g(r"BRF:(\d+)"), bh=g(r"BRH:(\d+)"), fn=g(r"FNF:(\d+)"), fh=g(r"FNH:(\d+)")))
-if {r['name'] for r in rows} != {'bgp_attr.c', 'bgp_open.c', 'bgp_packet.c', 'bgp_route.c'}:
-    raise SystemExit('Missing or unexpected target files in lcov capture')
-tot = lambda k1, k2: (sum(r[k1] for r in rows), sum(r[k2] for r in rows))
-tl, tlf = tot("lh", "lf"); tb, tbf = tot("bh", "bf"); tf, tfn = tot("fh", "fn")
-snap = {"files": rows, "frr_revision": sys.argv[2], "mode": "coverage-only",
-        "total": {"lines": tl, "lines_total": tlf,
-                  "branches": tb, "branches_total": tbf,
-                  "funcs": tf, "funcs_total": tfn}}
-for r in sorted(rows, key=lambda x: x["name"]):
-    print(f"  {r['name']:<16} lines {r['lh']}/{r['lf']} ({100*r['lh']/max(r['lf'],1):.1f}%)  "
-          f"branches {r['bh']}/{r['bf']} ({100*r['bh']/max(r['bf'],1):.1f}%)  "
-          f"funcs {r['fh']}/{r['fn']}")
-t = snap["total"]
-print(f"  {'TOTAL':<16} lines {tl}/{tlf} ({100*tl/max(tlf,1):.1f}%)  "
-      f"branches {tb}/{tbf} ({100*tb/max(tbf,1):.1f}%)  "
-      f"funcs {tf}/{tfn} ({100*tf/max(tfn,1):.1f}%)")
-base_path = "models/bgpd/malformed_packets/coverage_baseline.json"
-if mode == "--baseline":
-    json.dump(snap, open(base_path, "w"), indent=1)
-    print("[+] baseline saved:", base_path)
-else:
-    from pathlib import Path
-    if not Path(base_path).exists():
-        print('[i] No baseline; rerun with --baseline on the same FRR build for a comparison.')
-        sys.exit(0)
-    base = json.load(open(base_path))
-    signature = lambda data: sorted((r['name'], r['lf'], r['bf'], r['fn']) for r in data['files'])
-    if base.get('frr_revision') != snap['frr_revision'] or signature(base) != signature(snap):
-        raise SystemExit('Baseline build/denominators differ; no comparable coverage delta')
-    bt = base["total"]
-    print(f"[i] baseline: lines {bt['lines']}/{bt['lines_total']}, "
-          f"funcs {bt['funcs']}/{bt['funcs_total']}")
-    print(f"[+] delta: lines {100*(tl-bt['lines'])/+max(tlf,1):+.1f}pp, "
-          f"funcs {100*(tf-bt['funcs'])/max(tfn,1):+.1f}pp")
+Outputs: index.html, target.info, summary.json, parity.json;
+         baseline.json when --baseline is used.
+The lab is restarted after capture. Coverage mode does not check RFC parity.
 EOF
+}
+die() { echo "error: $*" >&2; exit 1; }
+while (($#)); do
+  case "$1" in
+    --container|--port|--limit|--out)
+      (($# >= 2)) || die "$1 needs a value"
+      case "$1" in
+        --container) container=$2 ;; --port) port=$2 ;; --limit) limit=$2 ;; --out) out_dir=$2 ;;
+      esac
+      shift 2 ;;
+    --baseline) baseline=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown option: $1 (see --help)" ;;
+  esac
+done
+[[ "$container" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || die "invalid container name"
+[[ "$port" =~ ^[0-9]{1,5}$ ]] || die "port must be an integer from 1 to 65535"
+port=$((10#$port))
+((port >= 1 && port <= 65535)) || die "port must be from 1 to 65535"
+[[ "$limit" =~ ^[0-9]{1,9}$ ]] || die "limit must be a positive integer"
+limit=$((10#$limit))
+((limit > 0)) || die "limit must be positive"
+command -v docker >/dev/null || die "install Docker and start its daemon first"
+command -v python3 >/dev/null || die "Python 3.10+ is required"
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || die "Python 3.10+ is required"
+docker info >/dev/null 2>&1 || die "Docker is not running; start it and retry"
+label=$(docker inspect --format '{{index .Config.Labels "org.sonic-formal-infra.coverage"}}' "$container" 2>/dev/null || true)
+[[ "$label" == true ]] || die "$container is not the current coverage lab; run setup_frr_coverage.sh (see --help)"
+docker exec "$container" pgrep -x bgpd >/dev/null || die "bgpd is not running in $container; rerun setup_frr_coverage.sh --replace"
+docker exec -u frr "$container" test -w /frr/bgpd || die "the FRR build tree is not writable by frr; rebuild the coverage lab"
+mkdir -p "$out_dir"
+out_dir=$(cd -- "$out_dir" && pwd)
+tmp_dir=$(mktemp -d)
+restart=false
+cleanup() {
+  status=$?
+  if $restart; then
+    docker restart "$container" >/dev/null || echo "error: could not restart $container" >&2
+  fi
+  rm -rf "$tmp_dir"
+  return "$status"
+}
+trap cleanup EXIT
+revision=$(docker exec -u frr "$container" git -C /frr rev-parse HEAD)
+echo "Waiting for the coverage observer's BGP session..."
+observer=false
+for ((attempt=0; attempt<60; attempt++)); do
+  peers=$(docker exec "$container" vtysh -c 'show bgp summary json' 2>/dev/null || true)
+  if python3 -c 'import json, sys
+try:
+    peer = json.load(sys.stdin)["ipv4Unicast"]["peers"]["127.0.0.1"]
+    sys.exit(peer["state"] != "Established")
+except (ValueError, KeyError):
+    sys.exit(1)' <<< "$peers"; then observer=true; break; fi
+  sleep 1
+done
+$observer || die "coverage observer did not establish BGP within 60 seconds; rerun setup_frr_coverage.sh --replace"
+echo "Resetting counters in $container..."
+docker exec "$container" lcov --zerocounters --directory /frr
+echo "Sending up to $limit cases per suite (coverage only)..."
+cd -- "$REPO_ROOT"
+python3 -m models.bgpd.malformed_packets.run_parity_fuzzer --suite all \
+  --container "$container" --port "$port" --limit "$limit" --coverage-mode \
+  --fail-on-deviation --out "$out_dir/parity.json"
+
+echo "Stopping bgpd to flush counters..."
+restart=true
+docker exec "$container" pkill -TERM -x bgpd
+for ((attempt=0; attempt<30; attempt++)); do
+  if ! docker exec "$container" pgrep -x bgpd >/dev/null; then break; fi
+  sleep 1
+done
+if docker exec "$container" pgrep -x bgpd >/dev/null; then die "bgpd did not exit; counters were not captured"; fi
+echo "Capturing coverage before restarting bgpd..."
+docker exec "$container" lcov --capture --directory /frr --output-file /tmp/bgp-coverage-all.info --rc lcov_branch_coverage=1
+docker exec "$container" lcov --extract /tmp/bgp-coverage-all.info \
+  '*/bgpd/bgp_attr.c' '*/bgpd/bgp_open.c' '*/bgpd/bgp_packet.c' '*/bgpd/bgp_route.c' \
+  --output-file /tmp/bgp-coverage-target.info --rc lcov_branch_coverage=1
+docker exec "$container" genhtml /tmp/bgp-coverage-target.info \
+  --output-directory /tmp/bgp-coverage-html --rc lcov_branch_coverage=1
+docker cp "$container:/tmp/bgp-coverage-target.info" "$out_dir/target.info"
+docker cp "$container:/tmp/bgp-coverage-html/." "$out_dir"
+args=(--info "$out_dir/target.info" --revision "$revision" --out "$out_dir" --parity "$out_dir/parity.json")
+if $baseline; then args+=(--baseline); fi
+python3 -m models.bgpd.malformed_packets.testing.c_coverage "${args[@]}"
+docker restart "$container" >/dev/null
+restart=false
+python3 - "$port" <<'PY'
+import socket, sys, time
+deadline = time.monotonic() + 60
+while time.monotonic() < deadline:
+    try:
+        with socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=1):
+            break
+    except OSError:
+        time.sleep(1)
+else:
+    raise SystemExit('error: lab restarted but BGP did not become ready')
+PY
+echo "Report: $out_dir/index.html"
+echo "Metrics: $out_dir/summary.json"

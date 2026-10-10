@@ -28,12 +28,12 @@ import hashlib
 from pathlib import Path
 
 import subprocess
-def clear_bgp_log():
-    subprocess.call(["docker", "exec", "frr-lab", "sh", "-c", "> /tmp/bgpd.log"])
+def clear_bgp_log(container="frr-lab"):
+    subprocess.call(["docker", "exec", container, "sh", "-c", "> /tmp/bgpd.log"])
 
-def get_bgp_log():
+def get_bgp_log(container="frr-lab"):
     try:
-        out = subprocess.check_output(["docker", "exec", "frr-lab", "cat", "/tmp/bgpd.log"], stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(["docker", "exec", container, "cat", "/tmp/bgpd.log"], stderr=subprocess.DEVNULL)
         lines = [l.split('] ')[-1].strip() for l in out.decode('utf-8').split('\n') if 'BGP:' in l and 'sockopt' not in l and 'TCP MD5' not in l and 'unrecognized capability' not in l]
         return "\n".join(lines)
     except Exception:
@@ -408,11 +408,11 @@ def send_update_and_monitor(s, update_bytes, fast=False):
     return notification_received, is_active
 
 
-def check_if_route_installed(prefix, retries=2):
+def check_if_route_installed(prefix, retries=2, container=FRR_CONTAINER):
     for attempt in range(retries + 1):
         try:
             out = subprocess.check_output(
-                ["docker", "exec", FRR_CONTAINER, "vtysh", "-c",
+                ["docker", "exec", container, "vtysh", "-c",
                  f"show ip bgp {prefix} json"],
                 stderr=subprocess.DEVNULL)
             data = json.loads(out)
@@ -476,17 +476,12 @@ def expected_observations(oracle_res, install_observable):
 
 
 def summarize_and_report(tally, discrepancies, out_path, dry_run, coverage_mode,
-                         corpus):
-    print("\n=======================================================================")
-    print("                COMPREHENSIVE EMPIRICAL RESULTS SUMMARY                ")
-    if dry_run:
-        print("                       (DRY RUN - no live daemon)                      ")
-    elif coverage_mode:
-        print("                    (COVERAGE ONLY - no parity checks)                 ")
-    print("=======================================================================")
-    print(f"Total Tests Executed      : {tally['TOTAL_EXECUTED']}")
+                         corpus, run_context):
+    mode = "dry run" if dry_run else "coverage only" if coverage_mode else "live parity"
+    print(f"\nBGP results ({mode})")
+    print(f"Cases processed: {tally['TOTAL_EXECUTED']}")
 
-    print("\n--- Parity Matrix (by oracle verdict) ---")
+    print("\nResults by oracle verdict:")
     print(f"{'Oracle Verdict':<28} | {'Total':>7} | {'PASS':>7} | {'FAIL':>7}")
     print("-" * 55)
     for key in ("VALID", "SESSION_RESET", "TREAT_AS_WITHDRAW",
@@ -495,14 +490,12 @@ def summarize_and_report(tally, discrepancies, out_path, dry_run, coverage_mode,
         if row:
             print(f"{key:<28} | {row['TOTAL']:>7} | {row['PASS']:>7} | {row['FAIL']:>7}")
 
-    print("\n--- Critical Metrics ---")
-    print(f"Connection/Handshake Errors: {tally['CONNECTION_FAILURES']}")
-    print(f"RIB Observation Errors   : {tally['OBSERVATION_ERRORS']}")
-    print("-----------------------------------------------------------------------")
-    print(f"Unexpected Protocol Deviations: {len(discrepancies)}")
+    print(f"\nConnection/handshake errors: {tally['CONNECTION_FAILURES']}")
+    print(f"RIB observation errors: {tally['OBSERVATION_ERRORS']}")
+    print(f"Unexpected outcomes: {len(discrepancies)}")
 
     if discrepancies:
-        print("\nDeviant Test IDs:")
+        print("\nCases with unexpected outcomes:")
         for idx, d in enumerate(discrepancies):
             if idx > 15:
                 print("... (truncated)")
@@ -520,7 +513,9 @@ def summarize_and_report(tally, discrepancies, out_path, dry_run, coverage_mode,
             "observation_errors": tally["OBSERVATION_ERRORS"],
             "skipped_asn2_cases": tally["SKIPPED_ASN2"],
             "corpus": corpus,
+            "run_context": run_context,
         }, "discrepancies": discrepancies}, f, indent=2)
+    print(f"Report: {out_path}")
 
 
 # ── Suite loading ────────────────────────────────────────────────────────────
@@ -548,7 +543,8 @@ def load_argdict(path):
 # ── Runners ──────────────────────────────────────────────────────────────────
 
 def run_update_suite(cases, builder, oracle_eval, label, tally, discrepancies,
-                     alloc, session, dry_run, limit, coverage_mode=False):
+                     alloc, session, dry_run, limit, coverage_mode=False,
+                     container=FRR_CONTAINER):
     """Generic runner for UPDATE-carrying suites. `builder(case, prefix_id)`
     returns (update_bytes, attrs_for_oracle, prefix_str|None, tag);
     `oracle_eval(attrs, case)` returns the ParseResult."""
@@ -585,20 +581,21 @@ def run_update_suite(cases, builder, oracle_eval, label, tally, discrepancies,
         if not coverage_mode and active and not notif and prefix_str is not None:
             time.sleep(0.05)
             try:
-                installed = check_if_route_installed(prefix_str)
+                installed = check_if_route_installed(prefix_str, container=container)
             except RuntimeError:
                 tally["OBSERVATION_ERRORS"] += 1
                 session.invalidate()
                 continue
         observed = classify_observation(notif, active, installed)
-        frr_log = get_bgp_log() if not dry_run and not coverage_mode else ''
+        frr_log = get_bgp_log(container) if not dry_run and not coverage_mode else ''
         allowed = expected_observations(oracle_res, prefix_str is not None)
         evaluate_case(test_id, oracle_res, "COVERAGE_ONLY" if coverage_mode else observed,
                       args, tally, discrepancies, allowed=allowed, frr_log=frr_log)
         time.sleep(0.01)
 
 
-def run_opencap_suite(cases, tally, discrepancies, host, port, dry_run, limit, coverage_mode=False):
+def run_opencap_suite(cases, tally, discrepancies, host, port, dry_run, limit,
+                      coverage_mode=False, container=FRR_CONTAINER):
     total = min(len(cases), limit) if limit is not None else len(cases)
     print(f"\n[*] Running suite: opencap ({total} cases)")
     if not dry_run:
@@ -624,16 +621,17 @@ def run_opencap_suite(cases, tally, discrepancies, host, port, dry_run, limit, c
             s.close()
             continue
         try:
-            clear_bgp_log()
+            if not coverage_mode:
+                clear_bgp_log(container)
             established = perform_bgp_handshake(s, open_msg=open_msg)
             if not established:
                 print(f"    [!] opencap-{i}: handshake incomplete (no KEEPALIVE)", flush=True)
             observed = OBS_INSTALLED if established else OBS_RESET
-            frr_log = get_bgp_log() if not dry_run and not coverage_mode else ""
+            frr_log = get_bgp_log(container) if not dry_run and not coverage_mode else ""
         except ConnectionError as e:
             print(f"    [!] opencap-{i}: {e}", flush=True)
             observed = OBS_RESET
-            frr_log = get_bgp_log() if not dry_run and not coverage_mode else ""
+            frr_log = get_bgp_log(container) if not dry_run and not coverage_mode else ""
         finally:
             s.close()
         time.sleep(0.1)              # settle: avoid connection-collision resets
@@ -681,7 +679,8 @@ SUITE_EVALS = {
 
 def execute_comprehensive_suite(suite="all", host=DEFAULT_HOST, port=DEFAULT_PORT,
                                 limit=None, out_path=None, dry_run=False,
-                                coverage_mode=False, fail_on_deviation=False):
+                                coverage_mode=False, fail_on_deviation=False,
+                                container=FRR_CONTAINER):
     if suite not in ("all", "legacy", "aspath", "mpreach", "opencap", "routerefresh"):
         raise ValueError(f"unknown suite: {suite}")
     if limit is not None and limit < 0:
@@ -726,7 +725,7 @@ def execute_comprehensive_suite(suite="all", host=DEFAULT_HOST, port=DEFAULT_POR
             return eval_legacy(attrs, case[0])
 
         run_update_suite(cases, legacy_builder, legacy_eval,
-                         "legacy", tally, discrepancies, alloc, session, dry_run, limit, coverage_mode)
+                         "legacy", tally, discrepancies, alloc, session, dry_run, limit, coverage_mode, container)
 
     if plan["aspath"]:
         cases = load("aspath_argdict.txt")
@@ -741,20 +740,20 @@ def execute_comprehensive_suite(suite="all", host=DEFAULT_HOST, port=DEFAULT_POR
         if not cases:
             print("[!] aspath dictionary missing - run seed_structural_suites.py or generate_aspath_suite.py under crosshair")
         run_update_suite(cases, build_aspath_update, eval_aspath,
-                         "aspath", tally, discrepancies, alloc, session, dry_run, limit, coverage_mode)
+                         "aspath", tally, discrepancies, alloc, session, dry_run, limit, coverage_mode, container)
 
     if plan["mpreach"]:
         cases = load("mpreach_argdict.txt")
         if not cases:
             print("[!] mpreach dictionary missing - run seed_structural_suites.py or generate_mpreach_suite.py under crosshair")
         run_update_suite(cases, build_mpreach_update, eval_mpreach,
-                         "mpreach", tally, discrepancies, alloc, session, dry_run, limit, coverage_mode)
+                         "mpreach", tally, discrepancies, alloc, session, dry_run, limit, coverage_mode, container)
 
 
     if plan["routerefresh"]:
         cases = load("routerefresh_argdict.txt")
         run_update_suite(cases, build_routerefresh_update, eval_routerefresh,
-                         "routerefresh", tally, discrepancies, alloc, session, dry_run, limit, coverage_mode)
+                         "routerefresh", tally, discrepancies, alloc, session, dry_run, limit, coverage_mode, container)
 
     if plan["opencap"]:
         if session is not None:
@@ -763,11 +762,13 @@ def execute_comprehensive_suite(suite="all", host=DEFAULT_HOST, port=DEFAULT_POR
         cases = load("opencap_argdict.txt")
         if not cases:
             print("[!] opencap dictionary missing - run seed_structural_suites.py or generate_opencap_suite.py under crosshair")
-        run_opencap_suite(cases, tally, discrepancies, host, port, dry_run, limit, coverage_mode)
+        run_opencap_suite(cases, tally, discrepancies, host, port, dry_run, limit, coverage_mode, container)
 
     if session is not None:
         session.close()
-    summarize_and_report(tally, discrepancies, out_path, dry_run, coverage_mode, corpus)
+    summarize_and_report(tally, discrepancies, out_path, dry_run, coverage_mode, corpus,
+                         {"suite": suite, "host": host, "port": port,
+                          "container": container, "limit": limit})
     if fail_on_deviation and (discrepancies or tally["CONNECTION_FAILURES"]
                               or tally["OBSERVATION_ERRORS"]):
         raise RuntimeError("parity run failed; see the JSON report for deviations/errors")
@@ -794,8 +795,10 @@ def main(argv=None):
     ap.add_argument("--suite", choices=["all", "legacy", "aspath", "mpreach", "opencap", "routerefresh"])
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
+    ap.add_argument("--container", default=FRR_CONTAINER,
+                    help="Docker container used for RIB/log queries (default: frr-lab)")
     ap.add_argument("--limit", type=int, help="max cases per suite")
-    ap.add_argument("--out", help="report JSON path")
+    ap.add_argument("--out", help="JSON path (default: parity_report_latest.json beside this script)")
     ap.add_argument("--coverage-mode", action="store_true", help="coverage mode: skip all vtysh and logging checks to maximize throughput")
     ap.add_argument("--dry-run", action="store_true",
                     help="build packets + run oracle without touching a daemon")
@@ -804,9 +807,13 @@ def main(argv=None):
     ns = ap.parse_args(argv)
 
     suite = ns.suite or _interactive_menu()
-    execute_comprehensive_suite(suite=suite, host=ns.host, port=ns.port,
-                                limit=ns.limit, out_path=ns.out, dry_run=ns.dry_run,
-                                coverage_mode=ns.coverage_mode, fail_on_deviation=ns.fail_on_deviation)
+    try:
+        execute_comprehensive_suite(suite=suite, host=ns.host, port=ns.port,
+                                    limit=ns.limit, out_path=ns.out, dry_run=ns.dry_run,
+                                    coverage_mode=ns.coverage_mode,
+                                    fail_on_deviation=ns.fail_on_deviation, container=ns.container)
+    except (ValueError, OSError, RuntimeError) as exc:
+        ap.exit(1, f"error: {exc}\n")
 
 
 if __name__ == "__main__":

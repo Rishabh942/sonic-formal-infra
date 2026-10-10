@@ -1,4 +1,4 @@
-import socket, struct, time
+import socket, struct
 
 def build_open():
     """Observer peer ASN must match the lab's configured remote-as 65003."""

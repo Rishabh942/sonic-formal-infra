@@ -1,6 +1,8 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ARG JOBS=2
+LABEL org.sonic-formal-infra.coverage="true"
 
 RUN apt-get update && apt-get install -y \
     git autoconf automake libtool make \
@@ -11,14 +13,14 @@ RUN apt-get update && apt-get install -y \
     libelf-dev pcre2-utils libpcre2-dev \
     libprotobuf-c-dev protobuf-c-compiler \
     libcap-dev \
-    build-essential curl cmake lcov
+    build-essential curl cmake lcov procps
 
 RUN git clone https://github.com/CESNET/libyang.git && \
     cd libyang && \
     git checkout v2.1.148 && \
     mkdir build && cd build && \
     cmake -DENABLE_LYD_PRIV=ON -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release .. && \
-    make -j$(nproc) && \
+    make -j${JOBS} && \
     make install
 
 RUN git clone -b frr-10.0.1 https://github.com/FRRouting/frr.git /frr
@@ -37,7 +39,7 @@ RUN ./configure \
     --disable-ldpd \
     --disable-doc
 
-RUN make -j$(nproc)
+RUN make -j${JOBS}
 RUN make install
 RUN ldconfig
 ENV LD_LIBRARY_PATH=/usr/local/lib
@@ -53,4 +55,6 @@ RUN chown frr:frrvty /etc/frr
 # Change ownership of the build tree to frr user to allow writing .gcda files
 RUN chown -R frr:frr /frr
 
-CMD ["/usr/lib/frr/bgpd", "-u", "frr", "-g", "frr", "-f", "/etc/frr/frr.conf"]
+COPY dummy_peer.py /usr/local/bin/bgpd-observer.py
+# Keep the container available after bgpd exits so lcov can read flushed counters.
+CMD ["bash", "-c", "python3 /usr/local/bin/bgpd-observer.py & /usr/lib/frr/bgpd -d -u frr -g frr -f /etc/frr/frr.conf && exec sleep infinity"]

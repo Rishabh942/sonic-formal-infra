@@ -1,124 +1,103 @@
-# BGP malformed-packet model and parity fuzzer
+# BGP malformed-packet tests
 
-This module models selected BGP attribute and OPEN error-handling rules and
-replays generated inputs against FRRouting. The default release candidate
-contains legacy attribute, AS_PATH/AS4_PATH, MP_REACH, OPEN capability, and
-Route Refresh suites. Stateful Graceful Restart and route lifecycle work are
-outside this cut.
+An executable RFC oracle and packet fuzzer for FRRouting. Suites cover path
+attributes, AS_PATH/AS4_PATH, MP_REACH, OPEN capabilities and Route Refresh.
+Stateful GR and route lifecycle tests are excluded from this release.
 
-## Pipeline and formal-methods scope
+Requires **Python 3.10+**. Live tests also require a running **Docker** daemon
+with Linux containers. Run the Python commands below from the repository root.
+The shell scripts work from any directory and support `--help`.
 
-`bgp_oracle.py` is an executable RFC model. `generate_*_suite.py` entry points
-expose bounded arguments for symbolic exploration with CrossHair.
-`packet_builders.py` supplies shared structural byte builders.
-`seed_structural_suites.py` enumerates a finite grid, deduplicates by wire bytes
-and verdict, and samples each verdict class. Enumeration is exhaustive only
-over that grid; the saved, capped corpus is a sample.
-
-`run_parity_fuzzer.py` loads the committed dictionaries, constructs packets,
-checks emitted UPDATE attributes against the oracle input, and evaluates the
-model. Live mode then compares permitted outcomes with session/RIB observations.
-These checks do not formally verify FRR's C implementation or prove complete RFC
-compliance. Python branch coverage and FRR C coverage are separate measurements.
-
-Active case files are `tests/*_argdict*.txt`: one Python literal dictionary per
-line, parsed with `ast.literal_eval`. Historical JSON files are reference
-artifacts and are not runner inputs. CrossHair output containing expressions
-(such as assignment expressions) must be converted to literal dictionaries
-before loading. `crosshair watch` analyzes contracts; it does not write these
-corpora automatically.
-
-## Offline release check
-
-From the repository root, with Python 3.10+ (no Docker or solver required):
+## Offline check
 
 ```bash
-python3 -m unittest models.bgpd.malformed_packets.testing.test_release -v
+python3 -m unittest models.bgpd.malformed_packets.testing.test_release models.bgpd.malformed_packets.testing.test_scripts
 python3 -m models.bgpd.malformed_packets.run_parity_fuzzer \
-  --suite all --dry-run --fail-on-deviation --out /tmp/bgp-release-dry-run.json
+  --suite all --dry-run --fail-on-deviation --out /tmp/bgp-dry-run.json
 ```
 
-Dry runs build packets and evaluate the model. Their matrix has **zero parity
-passes**, because no daemon was observed. Missing, empty, malformed, or
-non-literal corpora fail the run. `--limit` caps each suite; `--limit 0` executes
-zero cases. Reports include corpus row counts and SHA-256 hashes.
+This builds every saved packet and evaluates the oracle without Docker.
+Dry-run PASS/FAIL counters stay at zero because no daemon was observed.
+Missing or malformed case files fail the run.
 
-Regenerate the three structural corpora deterministically:
-
-```bash
-python3 -m models.bgpd.malformed_packets.seed_structural_suites --max-per-class 80
-```
-
-Use `--out-dir /tmp/bgp-seeds` to compare regeneration without replacing saved
-files. Symbolic tools are optional for replay (`pip install crosshair-tool`);
-the structural entry points return model verdicts for bounded inputs. A solver
-run, its bounds, and its output must be recorded separately before claiming
-symbolically derived coverage.
-
-## Live parity
-
-Docker is required. The setup scripts replace the container named `frr-lab`.
-The standard lab uses `quay.io/frrouting/frr:10.0.1`, local port 1179 and peer
-ASN 65002:
+## Live tests
 
 ```bash
 bash models/bgpd/malformed_packets/setup_frr_container.sh
 python3 -m models.bgpd.malformed_packets.run_parity_fuzzer \
-  --suite all --fail-on-deviation --out /tmp/bgp-live-parity.json
+  --suite all --limit 20 --fail-on-deviation --out /tmp/bgp-parity.json
 ```
 
-The runner advertises four-octet ASN support. Two-octet AS_PATH cases are
-executed offline and skipped live, with the skip count in the report. Session
-establishment and RIB-query failures are harness errors, not evidence that FRR
-crashed. Native IPv4 cases query `show ip bgp <prefix> json` and check for a
-`paths` entry; this does not prove kernel forwarding or re-advertisement.
-MP-only and Route Refresh cases check session survival only.
+Setup uses FRR **10.0.1**, container `frr-lab`, local port `1179`, and peer ASN
+`65002`. It sets router ID `10.0.0.1`, waits for BGP, and prints the next command. An existing
+container is preserved unless you pass `--replace` to setup.
+FRR receives `NET_ADMIN` and `SYS_ADMIN` capabilities inside the container.
 
-`--fail-on-deviation` exits nonzero for reported deviations and connection or
-observation errors. A discrepancy needs reproduction and RFC review before
-being escalated as an implementation defect.
+`--limit` caps each suite; omit it to run the full saved corpus. `--suite`
+accepts `all`, `legacy`, `aspath`, `mpreach`, `opencap`, or `routerefresh`.
+`--fail-on-deviation` returns a nonzero exit code for mismatches and harness
+errors. Review a mismatch's packet and RFC rule before treating it as an FRR bug.
 
-## Coverage
+For a separate lab, pass `--container bgp-test --port 11790` to both setup and
+the fuzzer. Stop it afterward with `docker stop bgp-test`; remove it with
+`docker rm bgp-test`. For the default lab, use `frr-lab` instead.
 
-Optional Python coverage (offline):
+## C coverage
 
-```bash
-python3 -m pip install coverage
-python3 -m models.bgpd.malformed_packets.testing.coverage
-```
-
-FRR C coverage (Linux Docker image built from FRR tag `frr-10.0.1`):
+The first command builds FRR with gcov; the first build can take several minutes.
+Use `--replace` when switching an existing standard lab to coverage mode.
 
 ```bash
-bash models/bgpd/malformed_packets/setup_frr_coverage.sh
+bash models/bgpd/malformed_packets/setup_frr_coverage.sh --replace
 bash models/bgpd/malformed_packets/collect_c_coverage.sh --baseline
 bash models/bgpd/malformed_packets/collect_c_coverage.sh
 ```
 
-The collector resets counters and injects up to 100 cases per suite in
-`--coverage-mode`. This mode **skips parity assertions** and records zero passes.
-It extracts `bgp_attr.c`, `bgp_open.c`, `bgp_packet.c`, and `bgp_route.c`, then
-renders `coverage_html_c/`. Baseline comparisons require the same FRR revision
-and file denominators. Create a local baseline; no historical coverage numbers
-are presented as measurements of this release.
+The collector waits for its observer peer, resets counters, injects up to 100 cases per suite, stops bgpd
+to flush counters, captures them, and restarts the lab. It measures
+`bgp_attr.c`, `bgp_open.c`, `bgp_packet.c`, and `bgp_route.c`.
+Coverage mode skips parity checks; it does not report compliance passes.
 
-## Known limits and next cleanup
+Results are under `models/bgpd/malformed_packets/coverage_html_c/`:
+`index.html`, raw `target.info`, metrics `summary.json`, injection `parity.json`,
+and `baseline.json`. Later runs compare line, branch and function percentages
+with the baseline. Comparisons require the same FRR revision, case limit and
+file denominators. The collector accepts `--container`, `--port`, `--limit`,
+and `--out DIR`.
+Live scheduling can change coverage between runs; a small delta alone is not
+evidence of a testing improvement.
 
-- Legacy dictionaries are expanded into individual attribute-slot mutations
-  around valid mandatory attributes. These are derived tests, rather than
-  exact replay of the original generator's whole attribute sequence. Old soft
-  dictionaries lack the newer `val1`/`val4` arguments and use zero payloads.
-- Payload normalization makes an attribute agree with its declared length;
-  a case named “truncated” may therefore become a valid normalized payload.
-- MP modeling covers selected header/nexthop framing, not full NLRI semantics.
-  Labeled/VPN tails are stress inputs; family RIB state is not queried.
-- OPEN modeling checks TLV framing and selected lengths, not every capability's
-  contents or negotiation. Capability assignments follow the
-  [IANA registry](https://www.iana.org/assignments/capability-codes/).
-- Route Refresh seeds exercise AFI/SAFI combinations with correct message
-  framing. They have a survival expectation, not a full refresh-state model.
+## Model and generation
 
-Next work should unify legacy generation and replay around the same complete
-wire case and context, regenerate those corpora, and add family-specific live
-observations. This release keeps those limitations explicit instead of claiming
-complete symbolic generation or full protocol verification.
+`bgp_oracle.py` defines selected RFC error-handling rules. Structural
+`generate_*_suite.py` functions expose bounded inputs for CrossHair;
+`packet_builders.py` supplies shared byte builders. The runner checks emitted
+UPDATE attributes against its oracle inputs before sending them.
+
+Saved cases in `tests/*.txt` are Python literal dictionaries, one per line,
+loaded with `ast.literal_eval`. Historical JSON files are not runner inputs.
+Regenerate the bounded structural sample separately:
+
+```bash
+python3 -m models.bgpd.malformed_packets.seed_structural_suites --out-dir /tmp/bgp-seeds
+```
+
+This enumerates a finite grid and samples each verdict class. It does not
+re-run an SMT solver. CrossHair exploration and case export are separate steps;
+`crosshair watch` does not write these files automatically. Neither enumeration
+nor replay proves complete RFC compliance or formally verifies FRR's C code.
+
+## Limits
+
+- Legacy rows become individual slot mutations, rather than whole-sequence
+  generator replay. Payloads are padded/truncated to their declared length.
+- Two-octet AS_PATH cases run offline and are skipped in the AS4 live session.
+- Native IPv4 tests check BGP `paths`, not kernel forwarding. MP and Route
+  Refresh tests check session survival, not family-specific route state.
+- MP modeling omits full NLRI semantics; OPEN modeling checks selected TLV
+  lengths, not every capability's contents or negotiation.
+
+Optional Python oracle coverage: install `coverage` with
+`python3 -m pip install coverage`, then run
+`python3 -m models.bgpd.malformed_packets.testing.coverage` from the repository root.
+The historical `setup_frr_legacy.sh` uses FRR 7.5; the default workflow uses 10.0.1.

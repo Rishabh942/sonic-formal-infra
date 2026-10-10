@@ -5,10 +5,9 @@ import json
 from pathlib import Path
 import socket
 import struct
-import subprocess
-import sys
 import tempfile
 import unittest
+from models.bgpd.malformed_packets.testing.c_coverage import main as coverage_main, read_lcov
 from unittest.mock import Mock, patch
 
 from models.bgpd.malformed_packets import run_parity_fuzzer as runner
@@ -21,7 +20,7 @@ from models.bgpd.malformed_packets.packet_builders import (
     build_as_path_value, build_capability_value, wrap_capability,
 )
 from models.bgpd.malformed_packets.seed_structural_suites import (
-    enumerate_space, verdict_of, wire_of,
+    enumerate_space, verdict_of,
 )
 
 
@@ -182,26 +181,34 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(int.from_bytes(packet[22:24], 'big'), 0)
 
     def test_lcov_branch_hits_and_baseline_compatibility(self):
-        script = (runner.BASE_DIR / 'collect_c_coverage.sh').read_text()
-        source = script.split("<<'EOF'\n", 1)[1].rsplit('\nEOF', 1)[0]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / 'models/bgpd/malformed_packets').mkdir(parents=True)
             fixture = root / 'target.info'
             fixture.write_text(''.join(
                 f'SF:/frr/bgpd/{name}\nLF:10\nLH:5\nBRF:8\nBRH:3\nFNF:2\nFNH:1\nend_of_record\n'
                 for name in ('bgp_attr.c', 'bgp_open.c', 'bgp_packet.c', 'bgp_route.c')))
-            source = source.replace('/tmp/frr_target.info', str(fixture))
-            result = subprocess.run([sys.executable, '-c', source, '--baseline', 'fixture-revision'],
-                                    cwd=root, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            baseline = json.loads((root / 'models/bgpd/malformed_packets/coverage_baseline.json').read_text())
-            self.assertEqual(baseline['total']['branches'], 12)
-            self.assertEqual(baseline['total']['branches_total'], 32)
-            changed = subprocess.run([sys.executable, '-c', source, 'run', 'different-revision'],
-                                     cwd=root, capture_output=True, text=True)
-            self.assertNotEqual(changed.returncode, 0)
-            self.assertIn('no comparable coverage delta', changed.stderr)
+            parity = root / 'parity.json'
+            parity.write_text(json.dumps({'summary': {'coverage_mode': True, 'dry_run': False,
+                'connection_failures': 0, 'observation_errors': 0, 'total': 5,
+                'run_context': {'limit': 1}, 'corpus': {}}}))
+            options = ['--info', str(fixture), '--parity', str(parity),
+                       '--out', str(root), '--revision', 'fixture-revision']
+            with contextlib.redirect_stdout(io.StringIO()):
+                coverage_main(options + ['--baseline'])
+            baseline = json.loads((root / 'baseline.json').read_text())
+            self.assertEqual(baseline['total']['bh'], 12)
+            self.assertEqual(baseline['total']['bf'], 32)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as failure:
+                    coverage_main(options[:-1] + ['different-revision'])
+            self.assertEqual(failure.exception.code, 1)
+            self.assertIn('no comparable coverage delta', err.getvalue())
+
+    def test_lcov_missing_or_duplicate_records_fail_closed(self):
+        text = 'SF:/frr/bgpd/bgp_attr.c\nLF:10\nLH:5\nBRF:8\nBRH:3\nFNF:2\nFNH:1\nend_of_record\n'
+        for bad in (text, text * 4, text.replace('BRH:3\n', '')):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                read_lcov(bad)
 
 
 if __name__ == '__main__':
