@@ -75,6 +75,31 @@ class CoreReleaseTests(unittest.TestCase):
                                                    out_path=out, fail_on_deviation=True)
             self.assertEqual(json.loads(out.read_text())['summary']['connection_failures'], 1)
 
+    def test_unsent_update_cannot_pass_as_a_reset(self):
+        sock = Mock()
+        sock.sendall.side_effect = BrokenPipeError('socket closed')
+        with self.assertRaises(ConnectionError):
+            runner.send_update_and_monitor(sock, runner.build_bgp_keepalive())
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), \
+                patch.object(runner, 'BgpSession') as session, \
+                patch.object(runner, 'clear_bgp_log'), \
+                patch.object(runner, 'eval_legacy', return_value=ParseResult.AFI_SAFI_DISABLE), \
+                patch.object(runner.time, 'sleep'):
+            session.return_value.sock = sock
+            out = Path(tmp) / 'report.json'
+            with self.assertRaises(RuntimeError):
+                runner.execute_comprehensive_suite(suite='extended', limit=1,
+                                                   out_path=out, fail_on_deviation=True)
+            summary = json.loads(out.read_text())['summary']
+            self.assertEqual(summary['connection_failures'], 1)
+            self.assertEqual(sum(row['PASS'] for row in summary['matrix'].values()), 0)
+
+    def test_disconnect_without_notification_is_not_protocol_reset(self):
+        self.assertEqual(runner.classify_observation(False, False, False),
+                         runner.OBS_DISCONNECTED)
+        self.assertEqual(runner.classify_observation(True, False, False),
+                         runner.OBS_RESET)
+
     def test_fragmented_handshake_and_notification(self):
         peer_open = runner.build_bgp_open(asn=65001)
         keepalive = runner.build_bgp_keepalive()

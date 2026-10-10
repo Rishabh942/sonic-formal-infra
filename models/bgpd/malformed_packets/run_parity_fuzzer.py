@@ -33,6 +33,8 @@ OBS_INSTALLED = "INSTALLED"
 
 OBS_NOT_INSTALLED = "NOT_INSTALLED"
 
+OBS_DISCONNECTED = "DISCONNECTED_WITHOUT_NOTIFICATION"
+
 ALLOWED_OBSERVATIONS = {
     ParseResult.VALID: {OBS_INSTALLED},                 # best-path must install
     ParseResult.ATTRIBUTE_DISCARD: {OBS_INSTALLED},     # route kept, bad attr dropped
@@ -276,9 +278,8 @@ def send_update_and_monitor(s, update_bytes, fast=False):
     is_active = True
     try:
         s.sendall(update_bytes)
-    except Exception as e:
-        print(f"[-] Failed to send UPDATE packet: {e}")
-        return False, False
+    except OSError as exc:
+        raise ConnectionError("UPDATE was not sent") from exc
 
     s.settimeout(0.01 if fast else 0.3)
     buf = b''
@@ -329,8 +330,10 @@ def check_if_route_installed(prefix, retries=2, container=FRR_CONTAINER):
     return False
 
 def classify_observation(notification_received, is_active, installed):
-    if notification_received or not is_active:
+    if notification_received:
         return OBS_RESET
+    if not is_active:
+        return OBS_DISCONNECTED
     return OBS_INSTALLED if installed else OBS_NOT_INSTALLED
 
 def evaluate_case(test_id, oracle_res, observed, args, tally, discrepancies,
@@ -448,7 +451,13 @@ def run_update_suite(cases, builder, oracle_eval, label, tally, discrepancies,
 
         if not coverage_mode:
             clear_bgp_log(container)
-        notif, active = send_update_and_monitor(session.sock, update_bytes, fast=coverage_mode)
+        try:
+            notif, active = send_update_and_monitor(session.sock, update_bytes, fast=coverage_mode)
+        except ConnectionError:
+            tally["CONNECTION_FAILURES"] += 1
+            session.invalidate()
+            time.sleep(0.15)
+            continue
         if not active:
             session.invalidate()
             time.sleep(0.15)         # avoid BGP connection-collision on reconnect

@@ -37,7 +37,8 @@ preserved unless you pass `--replace`.
 Omit `--limit` to replay the full corpus. It caps packet mutations **per suite**.
 `--suite` accepts `all` (default), `extended`, `soft`, or `semantic`.
 `--fail-on-deviation` returns nonzero for unexpected daemon behavior or harness
-errors. Reports distinguish route presence, session reset and route absence;
+errors. Reports distinguish route presence, notified session reset, unnotified
+disconnect and route absence; an unsent UPDATE is a harness error.
 a mismatch needs packet/RFC analysis before being reported as an FRR bug.
 
 For a separate lab, pass `--container bgp-test --port 11790` to setup and the
