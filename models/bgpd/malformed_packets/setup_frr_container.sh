@@ -1,13 +1,15 @@
 #!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/../../.."
 
 echo "[*] Setting up FRRouting Docker Container for Parity Testing..."
 
 # Stop and remove existing container if it exists
-docker stop frr-lab 2>/dev/null
-docker rm frr-lab 2>/dev/null
+docker stop frr-lab 2>/dev/null || true
+docker rm frr-lab 2>/dev/null || true
 
 # Start FRR container with port mapping
-docker run -d --privileged --name frr-lab -p 1179:179 quay.io/frrouting/frr:10.0.1
+docker run -d --privileged --name frr-lab -p 127.0.0.1:1179:179 quay.io/frrouting/frr:10.0.1
 
 echo "[*] Waiting for container to initialize..."
 sleep 3
@@ -25,6 +27,7 @@ log file /tmp/bgpd.log debugging
   neighbor FUZZ disable-connected-check
   neighbor FUZZ ebgp-multihop 255
   bgp listen range 0.0.0.0/0 peer-group FUZZ
+
 EOF
 
 docker cp frr.conf.tmp frr-lab:/etc/frr/frr.conf
@@ -32,6 +35,7 @@ rm frr.conf.tmp
 
 # Restart FRR container to apply daemons and config changes
 docker restart frr-lab
+sleep 2
 echo "[*] Waiting for bgpd to start..."
 sleep 3
 

@@ -1,110 +1,124 @@
-# BGP Formal Verification Parity Fuzzer
+# BGP malformed-packet model and parity fuzzer
 
-This module provides a formal verification testing suite that mathematically proves whether an open-source BGP parser (FRRouting) complies with the error-handling specifications detailed in **RFC 4271 (BGP-4)** and **RFC 7606 (Revised Error Handling)**.
+This module models selected BGP attribute and OPEN error-handling rules and
+replays generated inputs against FRRouting. The default release candidate
+contains legacy attribute, AS_PATH/AS4_PATH, MP_REACH, OPEN capability, and
+Route Refresh suites. Stateful Graceful Restart and route lifecycle work are
+outside this cut.
 
-By leveraging an SMT solver (Z3 via CrossHair), we condensed the infinite space of malformed BGP Update payloads into a mathematically complete set of exact edge cases (Suites 1 & 2). We also included directed semantic fuzzing for Community attributes (Suite 3). This suite fires these payloads at a live FRR daemon and asserts that FRR's physical C-parser mimics our Python Oracle (RFC 7606).
+## Pipeline and formal-methods scope
 
-## Core Architecture and File Explanations
+`bgp_oracle.py` is an executable RFC model. `generate_*_suite.py` entry points
+expose bounded arguments for symbolic exploration with CrossHair.
+`packet_builders.py` supplies shared structural byte builders.
+`seed_structural_suites.py` enumerates a finite grid, deduplicates by wire bytes
+and verdict, and samples each verdict class. Enumeration is exhaustive only
+over that grid; the saved, capped corpus is a sample.
 
-In this repository, we construct a formal model that acts as a "source of truth", and then we compare the outputs of our model with a live implementation (e.g. FRRouting) by sending generated packets over a local socket.
+`run_parity_fuzzer.py` loads the committed dictionaries, constructs packets,
+checks emitted UPDATE attributes against the oracle input, and evaluates the
+model. Live mode then compares permitted outcomes with session/RIB observations.
+These checks do not formally verify FRR's C implementation or prove complete RFC
+compliance. Python branch coverage and FRR C coverage are separate measurements.
 
-How the pieces fit together for the **BGP Malformed Packets** project:
-- **`generate_rfc4271_suite.py` / `generate_rfc7606_suite.py`**: Test suite generators that act as entry points for CrossHair. They declare "free variables" (e.g., `flags1`, `type4`, `len4`) representing the raw bytes of BGP attributes. CrossHair symbolically executes the oracle against these variables, exploring every logical branch, and solves for the exact concrete integer values (e.g., `{'flags1': 144, 'type4': 14, 'len4': 0}`) required to trigger each path. These instantiated arguments are saved as dictionaries in `tests/` and are later used to construct physical packets.
-- **`bgp_oracle.py`**: The formal reference implementation (Oracle). It reads incoming BGP path attributes and models strict logical branching outlined by RFC 4271 and RFC 7606 (e.g., when to trigger a Session Reset vs Attribute Discard).
-- **`run_parity_fuzzer.py`**: The engine driving the parity checks. It loads generated test dictionaries from `tests/`, connects over a socket to a live FRR daemon (e.g. `127.0.0.1:1179`), performs a BGP handshake, and ships the fuzzed packets. Finally, it observes if FRR crashed, tore down the session, or gracefully discarded attributes, comparing these live results precisely against the `bgp_oracle.py` expectations.
-- **`testing/coverage.py`**: Wraps the execution of `run_parity_fuzzer.py` using Python's `coverage` tool configured for strict **branch coverage**. This ensures that generated test cases cover 100% of all possible `if/else` edges (both True and False paths) inside the `bgp_oracle.py` specification, validating the thoroughness of the fuzzer.
+Active case files are `tests/*_argdict*.txt`: one Python literal dictionary per
+line, parsed with `ast.literal_eval`. Historical JSON files are reference
+artifacts and are not runner inputs. CrossHair output containing expressions
+(such as assignment expressions) must be converted to literal dictionaries
+before loading. `crosshair watch` analyzes contracts; it does not write these
+corpora automatically.
 
-## 🚀 Prerequisites
+## Offline release check
 
-To replicate these tests on your machine, you must have the following installed:
-- **Python 3.10+** (Required for CrossHair AST evaluation)
-- **Docker** (Required to spin up the FRRouting container)
-- **Z3 Theorem Prover** and **CrossHair** (`pip install crosshair-tool`)
-
----
-
-## 🛠️ Installation & Setup
-
-We have provided a fully automated setup script to deploy the exact FRR testing environment used in our verification.
-
-```bash
-# 1. Clone the repository and enter this directory
-git clone https://github.com/Rishabh942/sonic-formal-infra.git
-cd sonic-formal-infra/models/bgpd/malformed_packets
-
-# 2. Run the automated Docker setup script
-./setup_frr_container.sh
-```
-
-**What the setup script does:**
-- Downloads the `quay.io/frrouting/frr:10.0.1` Docker image.
-- Spins up a container named `frr-lab` and exposes BGP port `179` to `1179` on your localhost.
-- Automatically injects the necessary configuration to enable `bgpd` and configures it to peer with our Python fuzzer via AS 65002. (Note: `setup_frr_legacy.sh` is provided for FRR v7.5.0, but `setup_frr_container.sh` includes `disable-connected-check` and `ebgp-multihop 255` configurations required for the latest FRR versions to successfully accept fuzzed eBGP connections).
-
----
-
-## 🔬 Replicating the Results
-
-The core of this module is split into two phases: **Generation** (Oracle Prediction) and **Execution** (Fuzzing).
-
-### Phase 1: Generating the Formal Dictionaries (Optional)
-*Note: We have pre-committed the generated dictionaries (`tests/attr_argdict_extended.txt` and `tests/attr_argdict_soft.txt`), so you can skip this step if you just want to run the fuzzer.*
-
-If you want to re-run the Z3 solver to verify our mathematical constraints from scratch:
-```bash
-# 1. Generate the RFC 4271 (Strict Teardown) Suite:
-crosshair watch generate_rfc4271_suite.py
-
-# 2. Generate the RFC 7606 (Soft Fault) Suite:
-crosshair watch generate_rfc7606_suite.py
-```
-This commands Z3 to analyze `bgp_oracle.py` and output every unique variable combination required to achieve 100% path coverage.
-
-### Phase 2: Running the Master Fuzzer
-To dynamically inject the mathematically synthesized payloads into the live FRR router and verify compliance, run the comprehensive fuzzer from the root of the repo:
+From the repository root, with Python 3.10+ (no Docker or solver required):
 
 ```bash
-cd ../../../ # Go back to sonic-formal-infra root
-PYTHONPATH=. python3 models/bgpd/malformed_packets/run_parity_fuzzer.py
+python3 -m unittest models.bgpd.malformed_packets.testing.test_release -v
+python3 -m models.bgpd.malformed_packets.run_parity_fuzzer \
+  --suite all --dry-run --fail-on-deviation --out /tmp/bgp-release-dry-run.json
 ```
 
-### Phase 3: Branch Coverage Verification
-To prove that our fuzzing payloads rigorously exercise the logic inside the formal model, you can run the suite under strict branch coverage tracking. This ensures the fuzzer hits all possible True/False logical edges outlined by the RFCs:
+Dry runs build packets and evaluate the model. Their matrix has **zero parity
+passes**, because no daemon was observed. Missing, empty, malformed, or
+non-literal corpora fail the run. `--limit` caps each suite; `--limit 0` executes
+zero cases. Reports include corpus row counts and SHA-256 hashes.
+
+Regenerate the three structural corpora deterministically:
 
 ```bash
-cd ../../../ # Go back to sonic-formal-infra root
-PYTHONPATH=. python3 -m models.bgpd.malformed_packets.testing.coverage
+python3 -m models.bgpd.malformed_packets.seed_structural_suites --max-per-class 80
 ```
 
-This will run all generated test cases against `bgp_oracle.py` and output a terminal coverage report.
+Use `--out-dir /tmp/bgp-seeds` to compare regeneration without replacing saved
+files. Symbolic tools are optional for replay (`pip install crosshair-tool`);
+the structural entry points return model verdicts for bounded inputs. A solver
+run, its bounds, and its output must be recorded separately before claiming
+symbolically derived coverage.
 
-### 📊 Understanding the Output
-The fuzzer runs in real-time, executing roughly 100 payloads per minute. It checks whether FRR responds with a strict `SESSION_RESET`, or correctly degrades the route via `Treat-as-Withdraw` / `AFI_SAFI_DISABLE`.
+## Live parity
 
-Upon completion, you will see a comprehensive parity report similar to this example:
-```text
-=======================================================================
-                COMPREHENSIVE EMPIRICAL RESULTS SUMMARY                
-=======================================================================
-Total Tests Executed      : 2334
+Docker is required. The setup scripts replace the container named `frr-lab`.
+The standard lab uses `quay.io/frrouting/frr:10.0.1`, local port 1179 and peer
+ASN 65002:
 
---- Test Categorization (By Expected Behavior) ---
-Category                     |   Total |    PASS |    FAIL
--------------------------------------------------------
-Valid Updates                |      22 |      20 |       2
-Strict Teardown (RFC 4271)   |     110 |     110 |       0
-Treat-as-Withdraw (RFC 7606) |    1719 |    1719 |       0
-AFI/SAFI Disable (RFC 7606)  |       0 |       0 |       0
-Attribute Discard (RFC 7606) |     483 |     483 |       0
-
---- Critical Metrics ---
-Legitimate Route Installs : 503
-Routes Illegally Installed: 0
-FRR Parser Crashes        : 0
------------------------------------------------------------------------
-Unexpected Protocol Deviations: 2
-
-=> VERDICT: 2 Protocol Deviations Found.
+```bash
+bash models/bgpd/malformed_packets/setup_frr_container.sh
+python3 -m models.bgpd.malformed_packets.run_parity_fuzzer \
+  --suite all --fail-on-deviation --out /tmp/bgp-live-parity.json
 ```
 
-If the `RFC Compliance Deviations` counter increments, it means FRR's behavior deviates from strict RFC 7606 expectations (e.g., dropping the session instead of doing a Treat-As-Withdraw, or illegally installing a malformed optional attribute). The fuzzer will output the specific **Test IDs** (e.g., `V2-45`) so you can isolate and reproduce the exact broken payload. A detailed JSON file (`parity_report_comprehensive.json`) will also be generated containing the exact hex arguments used.
+The runner advertises four-octet ASN support. Two-octet AS_PATH cases are
+executed offline and skipped live, with the skip count in the report. Session
+establishment and RIB-query failures are harness errors, not evidence that FRR
+crashed. Native IPv4 cases query `show ip bgp <prefix> json` and check for a
+`paths` entry; this does not prove kernel forwarding or re-advertisement.
+MP-only and Route Refresh cases check session survival only.
+
+`--fail-on-deviation` exits nonzero for reported deviations and connection or
+observation errors. A discrepancy needs reproduction and RFC review before
+being escalated as an implementation defect.
+
+## Coverage
+
+Optional Python coverage (offline):
+
+```bash
+python3 -m pip install coverage
+python3 -m models.bgpd.malformed_packets.testing.coverage
+```
+
+FRR C coverage (Linux Docker image built from FRR tag `frr-10.0.1`):
+
+```bash
+bash models/bgpd/malformed_packets/setup_frr_coverage.sh
+bash models/bgpd/malformed_packets/collect_c_coverage.sh --baseline
+bash models/bgpd/malformed_packets/collect_c_coverage.sh
+```
+
+The collector resets counters and injects up to 100 cases per suite in
+`--coverage-mode`. This mode **skips parity assertions** and records zero passes.
+It extracts `bgp_attr.c`, `bgp_open.c`, `bgp_packet.c`, and `bgp_route.c`, then
+renders `coverage_html_c/`. Baseline comparisons require the same FRR revision
+and file denominators. Create a local baseline; no historical coverage numbers
+are presented as measurements of this release.
+
+## Known limits and next cleanup
+
+- Legacy dictionaries are expanded into individual attribute-slot mutations
+  around valid mandatory attributes. These are derived tests, rather than
+  exact replay of the original generator's whole attribute sequence. Old soft
+  dictionaries lack the newer `val1`/`val4` arguments and use zero payloads.
+- Payload normalization makes an attribute agree with its declared length;
+  a case named “truncated” may therefore become a valid normalized payload.
+- MP modeling covers selected header/nexthop framing, not full NLRI semantics.
+  Labeled/VPN tails are stress inputs; family RIB state is not queried.
+- OPEN modeling checks TLV framing and selected lengths, not every capability's
+  contents or negotiation. Capability assignments follow the
+  [IANA registry](https://www.iana.org/assignments/capability-codes/).
+- Route Refresh seeds exercise AFI/SAFI combinations with correct message
+  framing. They have a survival expectation, not a full refresh-state model.
+
+Next work should unify legacy generation and replay around the same complete
+wire case and context, regenerate those corpora, and add family-specific live
+observations. This release keeps those limitations explicit instead of claiming
+complete symbolic generation or full protocol verification.
