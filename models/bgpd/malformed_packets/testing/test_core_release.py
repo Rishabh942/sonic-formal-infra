@@ -192,6 +192,15 @@ class CoreReleaseTests(unittest.TestCase):
             with self.subTest(payload=payload, asn4=width):
                 self.assertEqual(parse_attributes(attrs, asn_4byte=width), expected)
 
+    def test_extended_community_length_must_be_nonzero_multiple_of_eight(self):
+        for length, expected in ((0, ParseResult.TREAT_AS_WITHDRAW),
+                                 (7, ParseResult.TREAT_AS_WITHDRAW),
+                                 (8, ParseResult.VALID)):
+            attrs = [*runner._mandatory_attrs(),
+                     BGPPathAttr(192, 16, length, b'\x00' * length)]
+            with self.subTest(length=length):
+                self.assertEqual(parse_attributes(attrs, asn_4byte=True), expected)
+
     def test_generator_and_slot_replay_share_core_rules(self):
         # Keep ORIGIN valid and isolate the fourth attribute's length rule.
         for length in range(13):

@@ -143,7 +143,7 @@ def parse_attributes(attrs: List[BGPPathAttr], is_ibgp: bool = False, impl_choic
             if attr.value is not None and len(attr.value) < 3: # Minimum AFI, SAFI
                 final_result = keep_most_severe(ParseResult.AFI_SAFI_DISABLE, final_result)
         elif attr.type_code == 16: # EXTENDED_COMMUNITIES
-            if not is_optional or not is_transitive or (attr.length % 8 != 0):
+            if not is_optional or not is_transitive or attr.length == 0 or (attr.length % 8 != 0):
                 final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 17: # AS4_PATH
             if not is_optional or not is_transitive:
