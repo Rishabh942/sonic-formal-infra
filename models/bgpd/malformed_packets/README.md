@@ -4,6 +4,10 @@ An executable RFC oracle and packet fuzzer for FRRouting. Suites cover path
 attributes, AS_PATH/AS4_PATH, MP_REACH, OPEN capabilities and Route Refresh.
 Stateful GR and route lifecycle tests are excluded from this release.
 
+This is a release candidate. Full live replay found unresolved oracle/daemon
+mismatches; [PR #7](https://github.com/sonic-net/sonic-formal-infra/pull/7)
+records the measurements and release gate.
+
 Requires **Python 3.10+**. Live tests also require a running **Docker** daemon
 with Linux containers. Run the Python commands below from the repository root.
 The shell scripts work from any directory and support `--help`.
