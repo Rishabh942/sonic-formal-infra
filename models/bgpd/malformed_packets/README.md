@@ -66,6 +66,7 @@ The four measured files are `bgp_attr.c`, `bgp_open.c`, `bgp_packet.c` and
 `bgp_route.c`. Comparisons require matching FRR revisions, counter scope, limits
 and denominators. The collector accepts `--container`, `--port`, `--limit`,
 and `--out DIR`. Small changes between captures can reflect scheduling.
+To cover all 2,344 saved packets, use `--limit 2000` on both collector calls.
 
 ## Model and arguments
 
@@ -87,6 +88,10 @@ mandatory attributes; they are not full-sequence generator replay. The oracle
 models selected RFC rules, not every attribute value or NLRI semantic. Native
 IPv4 observations check BGP `paths`, not kernel forwarding. The core keeps the
 earlier flag-first handling; later peer-first oracle changes are deferred.
+RFC precedence between eBGP attribute flags and peer-specific discard rules
+is still under review. Attribute-discard outcomes check route retention;
+AFI/SAFI-disable outcomes allow route absence or session reset. Per-attribute
+removal and family-state changes require separate checks.
 
 Replay does not require CrossHair. Symbolic exploration and case export are
 separate steps; `crosshair watch` does not export these files automatically.
