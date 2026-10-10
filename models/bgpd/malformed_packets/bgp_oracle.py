@@ -1,3 +1,9 @@
+"""Core BGP UPDATE attribute oracle from the August 20 scope.
+
+Models selected RFC 4271/7606 attribute flag, length and duplicate rules.
+Concrete payload checks cover AS_PATH framing. This module does not model
+OPEN negotiation, complete MP NLRI semantics or stateful GR behavior.
+"""
 from typing import List, Optional
 from dataclasses import dataclass
 from enum import IntEnum
@@ -26,6 +32,7 @@ class BGPPathAttr:
     flags: int
     type_code: int
     length: int
+    value: Optional[bytes] = None
 
 def keep_most_severe(new_result: ParseResult, current_result: ParseResult) -> ParseResult:
     """
@@ -35,8 +42,13 @@ def keep_most_severe(new_result: ParseResult, current_result: ParseResult) -> Pa
     """
     return min(new_result, current_result)
 
-def parse_attributes(attrs: List[BGPPathAttr], is_ibgp: bool = False, impl_choice: Optional[ImplChoice] = None) -> ParseResult:
-    """Simulates comprehensive FRR bgp_attr_parse() logical branches for RFC 4271/7606."""
+def parse_attributes(attrs: List[BGPPathAttr], is_ibgp: bool = False, impl_choice: Optional[ImplChoice] = None, asn_4byte: bool = False) -> ParseResult:
+    """Evaluate selected UPDATE rules. asn_4byte follows session negotiation.
+
+    value=None selects the legacy length-only model; concrete payloads
+    enable framing checks. External-neighbor handling retains the earlier
+    flag-first rules rather than the later peer-first changes.
+    """
     seen_origin = False
     seen_as_path = False
     seen_nexthop = False
@@ -71,6 +83,20 @@ def parse_attributes(attrs: List[BGPPathAttr], is_ibgp: bool = False, impl_choic
             seen_as_path = True
             if is_optional or not is_transitive:
                 final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
+            elif attr.value is not None:
+                # Basic framing check for AS_PATH
+                idx = 0
+                while idx < len(attr.value):
+                    if idx + 1 >= len(attr.value):
+                        final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
+                        break
+                    seg_type = attr.value[idx]
+                    seg_len = attr.value[idx+1]
+                    if seg_type not in (1, 2) or seg_len == 0 or idx + 2 + seg_len * (4 if asn_4byte else 2) > len(attr.value):
+                        # RFC 7606 §7.2: invalid type, zero count or truncated ASNs.
+                        final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
+                        break
+                    idx += 2 + seg_len * (4 if asn_4byte else 2)
         elif attr.type_code == 3: # NEXT_HOP
             seen_nexthop = True
             if is_optional or not is_transitive or attr.length != 4:
@@ -88,10 +114,10 @@ def parse_attributes(attrs: List[BGPPathAttr], is_ibgp: bool = False, impl_choic
             if is_optional or not is_transitive or attr.length != 0:
                 final_result = keep_most_severe(ParseResult.ATTRIBUTE_DISCARD, final_result)
         elif attr.type_code == 7: # AGGREGATOR
-            if not is_optional or not is_transitive or attr.length != 6:
+            if not is_optional or not is_transitive or attr.length != (8 if asn_4byte else 6):
                 final_result = keep_most_severe(ParseResult.ATTRIBUTE_DISCARD, final_result)
         elif attr.type_code == 8: # COMMUNITY
-            if not is_optional or not is_transitive or (attr.length % 4 != 0):
+            if not is_optional or not is_transitive or attr.length == 0 or (attr.length % 4 != 0):
                 final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 9: # ORIGINATOR_ID
             if not is_optional or is_transitive or attr.length != 4:
@@ -103,10 +129,19 @@ def parse_attributes(attrs: List[BGPPathAttr], is_ibgp: bool = False, impl_choic
             if not is_optional or is_transitive:
                 choice = ParseResult(impl_choice.mp_nlri_choice.value) if impl_choice else ParseResult.IMPL_CHOICE
                 final_result = keep_most_severe(choice, final_result)
+            if attr.value is not None:
+                if len(attr.value) < 5: # Minimum AFI, SAFI, NH Len
+                    final_result = keep_most_severe(ParseResult.AFI_SAFI_DISABLE, final_result)
+                else:
+                    nh_len = attr.value[3]
+                    if len(attr.value) < 5 + nh_len:
+                        final_result = keep_most_severe(ParseResult.AFI_SAFI_DISABLE, final_result)
         elif attr.type_code == 15: # MP_UNREACH_NLRI
             if not is_optional or is_transitive:
                 choice = ParseResult(impl_choice.mp_nlri_choice.value) if impl_choice else ParseResult.IMPL_CHOICE
                 final_result = keep_most_severe(choice, final_result)
+            if attr.value is not None and len(attr.value) < 3: # Minimum AFI, SAFI
+                final_result = keep_most_severe(ParseResult.AFI_SAFI_DISABLE, final_result)
         elif attr.type_code == 16: # EXTENDED_COMMUNITIES
             if not is_optional or not is_transitive or (attr.length % 8 != 0):
                 final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)

@@ -17,11 +17,11 @@ def test_attribute_sequence_soft(
         
     attrs = [
         BGPPathAttr(flags1, 1, len1),       # ORIGIN: Type 1
-        BGPPathAttr(64, 2, 4),              # AS_PATH: Type 2, flags=64 (valid), len=4 (2-byte ASN)
+        BGPPathAttr(64, 2, 6),              # AS_PATH: Type 2, flags=64 (valid), len=6 (4-byte ASN)
         BGPPathAttr(64, 3, 4),              # NEXT_HOP: Type 3, flags=64 (valid), len=4
         BGPPathAttr(flags4, type4, len4)    # OPTIONAL/4th attribute
     ]
-    res = parse_attributes(attrs)
+    res = parse_attributes(attrs, asn_4byte=True)
     if res.name == "INVALID_INPUTS":
         return "INVALID_INPUTS"
     return res.name
