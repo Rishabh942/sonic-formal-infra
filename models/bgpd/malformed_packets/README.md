@@ -78,6 +78,20 @@ UPDATE attributes against its oracle inputs before sending them.
 
 Saved cases in `tests/*.txt` are Python literal dictionaries, one per line,
 loaded with `ast.literal_eval`. Historical JSON files are not runner inputs.
+
+For example, the AS_PATH entry point takes bounded integer free variables for
+segment types/counts, ASN width, an AS4_PATH companion and length adjustment:
+
+```python
+{'seg1_type': 2, 'seg1_count': 1, 'seg2_type': 0, 'seg2_count': 0,
+ 'asn_4byte': 1, 'with_as4_path': 0, 'extra_len': 0}
+```
+
+This builds one AS_SEQUENCE containing ASN 65002: `02 01 00 00 fd ea`.
+The generator evaluates those bytes with the oracle; replay builds the same
+value inside an UPDATE with attribute header `40 02 06`. Setting `extra_len`
+to `-1` removes the last byte, producing a truncated ASN.
+
 Regenerate the bounded structural sample separately:
 
 ```bash
