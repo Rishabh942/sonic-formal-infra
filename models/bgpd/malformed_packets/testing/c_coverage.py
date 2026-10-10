@@ -32,7 +32,7 @@ def read_lcov(text):
 
 
 def signature(snapshot):
-    return (snapshot['frr_revision'], snapshot['limit'],
+    return (snapshot['frr_revision'], snapshot['limit'], snapshot.get('counter_scope'),
             [(r['name'], r['lf'], r['bf'], r['fn']) for r in snapshot['files']])
 
 
@@ -56,6 +56,7 @@ def main(argv=None):
         rows = read_lcov(args.info.read_text())
         total = {key: sum(r[key] for r in rows) for key in ('lf', 'lh', 'bf', 'bh', 'fn', 'fh')}
         snap = {'frr_revision': args.revision, 'mode': 'coverage-only',
+                'counter_scope': 'fresh-daemon-startup-and-injection',
                 'limit': run['run_context']['limit'], 'corpus': run['corpus'],
                 'files': rows, 'total': total}
         args.out.mkdir(parents=True, exist_ok=True)
@@ -71,7 +72,7 @@ def main(argv=None):
         elif baseline.exists():
             old = json.loads(baseline.read_text())
             if signature(old) != signature(snap):
-                raise ValueError('baseline build, case limit or denominators differ; no comparable coverage delta')
+                raise ValueError('baseline build, scope, case limit or denominators differ; no comparable coverage delta')
             changes = []
             for label, hit, found in (('lines', 'lh', 'lf'), ('branches', 'bh', 'bf'), ('functions', 'fh', 'fn')):
                 delta = percent(total[hit], total[found]) - percent(old['total'][hit], old['total'][found])

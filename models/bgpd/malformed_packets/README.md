@@ -53,8 +53,10 @@ bash models/bgpd/malformed_packets/collect_c_coverage.sh --baseline
 bash models/bgpd/malformed_packets/collect_c_coverage.sh
 ```
 
-The collector waits for its observer peer, resets counters, injects up to 100 cases per suite, stops bgpd
-to flush counters, captures them, and restarts the lab. It measures
+The collector clears counters with bgpd stopped, starts a fresh daemon, waits
+for its observer peer, and injects up to 100 cases per suite. It then stops bgpd
+to flush counters, captures them, and restarts the lab. Startup is included in
+the measurement. It measures
 `bgp_attr.c`, `bgp_open.c`, `bgp_packet.c`, and `bgp_route.c`.
 Coverage mode skips parity checks; it does not report compliance passes.
 

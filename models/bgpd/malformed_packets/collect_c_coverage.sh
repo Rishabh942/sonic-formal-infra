@@ -11,7 +11,7 @@ baseline=false
 usage() {
   cat <<'EOF'
 Usage: bash collect_c_coverage.sh [options]
-Reset counters, send the saved cases, and collect bgpd C coverage.
+Start a fresh daemon, send the saved cases, and collect bgpd C coverage.
 Requires a running lab created by setup_frr_coverage.sh.
 
   --baseline        Save this run as the baseline for later comparisons
@@ -68,7 +68,22 @@ cleanup() {
   return "$status"
 }
 trap cleanup EXIT
+stop_bgpd() {
+  restart=true
+  docker exec "$container" pkill -TERM -x bgpd
+  for ((attempt=0; attempt<30; attempt++)); do
+    if ! docker exec "$container" pgrep -x bgpd >/dev/null; then return; fi
+    sleep 1
+  done
+  die "bgpd did not exit; counters were not captured"
+}
 revision=$(docker exec -u frr "$container" git -C /frr rev-parse HEAD)
+echo "Starting a fresh coverage run in $container..."
+stop_bgpd
+# Clear files while bgpd is stopped; an active process retains in-memory counts.
+docker exec "$container" lcov --zerocounters --directory /frr
+docker restart "$container" >/dev/null
+restart=false
 echo "Waiting for the coverage observer's BGP session..."
 observer=false
 for ((attempt=0; attempt<60; attempt++)); do
@@ -82,8 +97,6 @@ except (ValueError, KeyError):
   sleep 1
 done
 $observer || die "coverage observer did not establish BGP within 60 seconds; rerun setup_frr_coverage.sh --replace"
-echo "Resetting counters in $container..."
-docker exec "$container" lcov --zerocounters --directory /frr
 echo "Sending up to $limit cases per suite (coverage only)..."
 cd -- "$REPO_ROOT"
 python3 -m models.bgpd.malformed_packets.run_parity_fuzzer --suite all \
@@ -91,13 +104,7 @@ python3 -m models.bgpd.malformed_packets.run_parity_fuzzer --suite all \
   --fail-on-deviation --out "$out_dir/parity.json"
 
 echo "Stopping bgpd to flush counters..."
-restart=true
-docker exec "$container" pkill -TERM -x bgpd
-for ((attempt=0; attempt<30; attempt++)); do
-  if ! docker exec "$container" pgrep -x bgpd >/dev/null; then break; fi
-  sleep 1
-done
-if docker exec "$container" pgrep -x bgpd >/dev/null; then die "bgpd did not exit; counters were not captured"; fi
+stop_bgpd
 echo "Capturing coverage before restarting bgpd..."
 docker exec "$container" lcov --capture --directory /frr --output-file /tmp/bgp-coverage-all.info --rc lcov_branch_coverage=1
 docker exec "$container" lcov --extract /tmp/bgp-coverage-all.info \
