@@ -21,6 +21,113 @@ How the pieces fit together for the **BGP Malformed Packets** project:
 - **`testing/coverage.py`**: Wraps the execution of `run_parity_fuzzer.py` using Python's `coverage` tool to measure branch coverage of the oracle.
 - **`collect_c_coverage.sh`**: Runs the selected suite against the gcov-instrumented container (`setup_frr_coverage.sh` / `Dockerfile.coverage`), captures lcov data for `bgp_attr.c`, `bgp_fsm.c`, `bgp_packet.c`, `bgp_open.c`, and `bgp_route.c`, and renders HTML into `coverage_html_c/`. Use two lcov captures and `compare_c_coverage.py` for an incremental comparison.
 
+## Draft: stateful suites integrated with the parity fuzzer
+
+The stateful expansion now uses the same **`run_parity_fuzzer.py` entry point,
+packet oracle, parity matrix, JSON report, dry-run/coverage modes, and failure
+exit convention** as the existing suites. It adds these suite names:
+
+| Suite | Generation and checks | Lab |
+| --- | --- | --- |
+| `grrestart` | Existing 29 directed OPEN cases through `parse_capabilities` | Legacy or combined |
+| `grstate` | Existing six GR scenarios retained as regressions | Legacy or combined |
+| `grgenerated` | 33 legal model-generated traces; check absent/active/stale route states | Legacy or combined |
+| `routecompetition` | 88 generated traces; check candidates, selected route, and observer UPDATEs | Combined |
+| `generated` | `grgenerated` plus `routecompetition` | Combined |
+| `all_existing` | Earlier packet suites plus `grrestart` and `grstate` | Legacy or combined |
+| `all` | Earlier suites plus `grgenerated`; also includes `routecompetition` with the combined profile | Profile-dependent |
+
+`route_model.py` specifies two candidate peers, two prefixes, AS-path lengths
+of one or two, and ORIGIN values IGP or incomplete. The finite graph has
+**625 states and 17,500 labeled transitions**, checked for candidate isolation,
+replacement/withdrawal behavior, and preference/eligibility. Breadth-first
+exploration derives shortest witnesses for **102 behavioral targets**,
+deduplicated to **88 traces**. Those traces are a selected subset of model
+paths; the live daemon does not execute every model edge.
+
+The route wire adapter decodes its actual UPDATE bytes with the shared
+`decode_update_attributes`, calls **`bgp_oracle.parse_attributes`** with the
+negotiated AS width and peer first-AS policy, and derives the state effect
+from that verdict and the decoded attributes. It also compares with the
+independent abstract event: an encoder or oracle disagreement fails the run
+instead of silently changing the expectation for FRR. Explicit withdrawals
+and EOR are handled as protocol events rather than attribute-bearing UPDATEs.
+
+`gr_model.generate_traces()` explores **18 unique states and 64 enabled
+transitions**, producing **33 traces for 40 targets**. Guards prevent actions
+such as sending UPDATEs while disconnected. Generated GR OPENs and route
+announcements are checked by the existing capability/attribute oracles before
+replay. The live checks distinguish absent, active, and stale routes and
+include selective refresh followed by EOR. The original bounded GR walk and
+six regression scenarios remain available; its historical 549,920 execution
+count includes repeated paths and is not a unique graph-edge count.
+
+Generated replay exposed a missing consecutive-restart rule in the earlier
+GR model. The corrected model deletes previously stale routes on a second
+disconnect while retaining freshly learned routes as stale, as required by
+[RFC 4724 section 4.2](https://www.rfc-editor.org/rfc/rfc4724.html#section-4.2).
+An explicit regression checks that distinction; FRR followed the RFC in the
+observed discrepancy.
+
+These new stateful generators use exhaustive finite-state exploration, not
+CrossHair/Z3. Existing symbolic generators remain in place. AS4_PATH now uses
+one companion-attribute builder in both `generate_aspath_suite.py` and the
+live runner, including matching first-AS policy. Tests compare their verdicts
+and decoded wire attributes across structural partitions.
+
+From the repository root:
+
+```bash
+# All generated traces: build actual packets, invoke the oracle, check models.
+python3 -m models.bgpd.malformed_packets.run_parity_fuzzer \
+  --suite generated --dry-run --fail-on-deviation --out /tmp/generated-dry.json
+python3 -m unittest models.bgpd.malformed_packets.testing.test_stateful_integration
+
+# Provision the isolated combined lab and invoke the main parity fuzzer.
+# Requires the already-built frr-coverage-lab image; no host ports are exposed.
+bash models/bgpd/malformed_packets/run_route_lab.sh
+bash models/bgpd/malformed_packets/run_route_lab.sh --suite routecompetition
+bash models/bgpd/malformed_packets/run_route_lab.sh --suite all_existing --limit 6
+bash models/bgpd/malformed_packets/run_route_lab.sh --suite all
+
+# Common baseline: previous corpus (limit 100 per suite) + topology control,
+# then the new generated suites, with cumulative C coverage on the same build.
+bash models/bgpd/malformed_packets/run_route_lab.sh --measure
+
+# The existing coverage entry point dispatches these suites to that same lab.
+bash models/bgpd/malformed_packets/collect_c_coverage.sh --suite generated
+```
+
+The wrapper passes `--frr-local --lab-profile combined` to the main runner;
+`frr_backend.py` provides the shared local-or-Docker CLI and log access.
+Outside that wrapper, the existing Docker `frr-lab` observation backend is
+still the default. `route_stateful.py` remains a compatibility entry point
+that delegates to the main runner. `--limit 0` selects zero cases.
+
+The combined lab uses a fourth, single-client neighbor for the earlier
+packet/GR suites, two route advertisers, and an observing peer. It enables
+GR for the GR suites; route-competition peers do not negotiate GR. Route
+competition assumes equal weight/local-pref, no route policy/multipath,
+IPv4 unicast, and `compare-routerid` for deterministic ties. The daemon runs
+with `-Z`, without forwarding-plane checks. Combining GR with competing
+routes in one state model, timer races after reconnect, additional address
+families, and failure-trace minimization remain outside this draft.
+
+Reports retain `summary`, `discrepancies`, and `stateful_results`, and add
+`suite_metadata` for graph counts and source/traffic evidence. Dry runs and
+coverage runs do not count as empirical passes; adapter/model failures still
+fail those runs. Observation errors fail explicitly rather than appearing
+as absent routes. Live observations use bounded convergence checks; this is
+not a general liveness proof or a proof of the FRR C implementation.
+
+The wrapper prints a unique `/tmp/frr-route-draft.*` directory and removes
+its container on exit. Measurement mode saves `baseline.json`, `control.json`,
+`report.json`, both raw lcov captures, and the per-file line/function delta.
+It omits CLI observations and uses cumulative counters. This new common
+baseline supersedes the earlier draft's single-advertiser-only comparison;
+never add those different deltas together. Timing/startup activity can still
+contribute hits. Branch summaries now read lcov's `BRH` field correctly.
+
 ## 🚀 Prerequisites
 
 To replicate these tests on your machine, you must have the following installed:

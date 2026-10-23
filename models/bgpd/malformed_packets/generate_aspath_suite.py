@@ -9,7 +9,7 @@ dictionary consumed by run_parity_fuzzer.py (suite "aspath").
 """
 
 from models.bgpd.malformed_packets.bgp_oracle import parse_attributes, BGPPathAttr
-from models.bgpd.malformed_packets.packet_builders import build_as_path_value
+from models.bgpd.malformed_packets.packet_builders import build_as_path_value, build_as4_path_attr
 
 
 def test_as_path_structure(
@@ -39,8 +39,8 @@ def test_as_path_structure(
     ]
     if with_as4_path:
         # Well-formed AS4_PATH companion (RFC 6793 interplay).
-        as4 = build_as_path_value(1, 1, 0, 0, True, 0)
-        attrs.append(BGPPathAttr(128, 17, len(as4), as4))
+        attrs.append(build_as4_path_attr(True))
 
-    res = parse_attributes(attrs, asn_4byte=is4)
+    # Match the live lab's eBGP first-AS policy as well as its wire builder.
+    res = parse_attributes(attrs, asn_4byte=is4, enforce_first_as=65002)
     return res.name

@@ -14,6 +14,49 @@ instead of raw byte soup.
 
 import struct
 
+from models.bgpd.malformed_packets.bgp_oracle import BGPPathAttr
+
+
+def decode_update_attributes(packet):
+    """Decode UPDATE framing back to oracle inputs without judging attributes.
+
+    The adapter rejects truncated framing. Malformed attribute *values* are
+    retained verbatim for parse_attributes to classify. Returns withdrawals,
+    attributes, and announced NLRI as encoded, including empty EOR fields.
+    """
+    if (len(packet) < 23 or packet[:16] != b'\xff' * 16
+            or int.from_bytes(packet[16:18], 'big') != len(packet)
+            or packet[18] != 2):
+        raise ValueError('invalid UPDATE framing')
+    withdrawn_len = int.from_bytes(packet[19:21], 'big')
+    offset = 21 + withdrawn_len
+    if offset + 2 > len(packet):
+        raise ValueError('truncated withdrawn-routes field')
+    end = offset + 2 + int.from_bytes(packet[offset:offset + 2], 'big')
+    if end > len(packet):
+        raise ValueError('truncated path-attributes field')
+    raw = packet[offset + 2:end]
+    attrs = []
+    while raw:
+        if len(raw) < 3:
+            raise ValueError('truncated attribute header')
+        flags, code = raw[:2]
+        header = 4 if flags & 0x10 else 3
+        if len(raw) < header:
+            raise ValueError('truncated extended attribute header')
+        length = int.from_bytes(raw[2:header], 'big')
+        if header + length > len(raw):
+            raise ValueError('truncated attribute value')
+        attrs.append(BGPPathAttr(flags, code, length, raw[header:header + length]))
+        raw = raw[header + length:]
+    return packet[21:offset], attrs, packet[end:]
+
+
+def build_as4_path_attr(asn_4byte):
+    """Shared companion attribute for symbolic generation and live encoding."""
+    value = build_as_path_value(1, 1, 0, 0, asn_4byte, 0)
+    return BGPPathAttr(0xC0, 17, len(value), value)
+
 # Bounded AFI/SAFI universes for MP_* fuzzing (SMT-friendly small sets).
 MP_AFIS = (0, 1, 2)            # 0 = invalid on purpose, 1=IPv4, 2=IPv6
 MP_SAFIS = (0, 1, 2, 4, 128)   # 0 invalid, 1 unicast, 2 multicast, 4 mpls-vpn, 128 vpnv4

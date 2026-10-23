@@ -19,19 +19,34 @@
 #      have lcov installed).
 
 set -euo pipefail
-cd "$(dirname "$0")/../../.."   # repo root
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../../.."   # repo root
 
 MODE="run"
 SUITE="all"
 LIMIT="100"
+PROFILE="legacy"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --baseline) MODE="--baseline"; shift ;;
     --suite) SUITE="$2"; shift 2 ;;
     --limit) LIMIT="$2"; shift 2 ;;
+    --lab-profile) PROFILE="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+case "$PROFILE" in
+  legacy|combined) ;;
+  *) echo "Unknown lab profile: $PROFILE" >&2; exit 2 ;;
+esac
+case "$SUITE" in generated|routecompetition) PROFILE="combined" ;; esac
+if [[ "$PROFILE" == combined ]]; then
+  if [[ "$MODE" == --baseline ]]; then
+    echo "Combined mode saves raw baseline and generated captures together; omit --baseline." >&2
+    exit 2
+  fi
+  exec bash "$SCRIPT_DIR/run_route_lab.sh" --measure --suite "$SUITE" --limit "$LIMIT"
+fi
 FILES='*/bgpd/bgp_attr.c */bgpd/bgp_fsm.c */bgpd/bgp_open.c */bgpd/bgp_packet.c */bgpd/bgp_route.c'
 
 echo "[*] Fixing gcda write permissions..."
@@ -66,7 +81,7 @@ for sec in txt.split("end_of_record"):
         mm = re.search(p, sec, re.M)
         return int(mm.group(1)) if mm else 0
     rows.append(dict(name=m.group(1).split("/")[-1], lf=g(r"LF:(\d+)"), lh=g(r"LH:(\d+)"),
-                     bf=g(r"BRF:(\d+)"), bh=g(r"BH:(\d+)"), fn=g(r"FNF:(\d+)"), fh=g(r"FNH:(\d+)")))
+                     bf=g(r"BRF:(\d+)"), bh=g(r"BRH:(\d+)"), fn=g(r"FNF:(\d+)"), fh=g(r"FNH:(\d+)")))
 tot = lambda k1, k2: (sum(r[k1] for r in rows), sum(r[k2] for r in rows))
 tl, tlf = tot("lh", "lf"); tb, tbf = tot("bh", "bf"); tf, tfn = tot("fh", "fn")
 snap = {"files": rows,

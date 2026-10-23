@@ -8,6 +8,7 @@ the socket harness; live scenarios then compare FRR's RIB with this model.
 from dataclasses import dataclass
 from enum import IntEnum
 from itertools import product
+from collections import deque
 
 
 class RouteState(IntEnum):
@@ -39,7 +40,9 @@ def step(state: GrState, event: str, route: int = 0) -> GrState:
             routes[route] = RouteState.ACTIVE
     elif event == 'disconnect':
         if connected:
-            routes = [RouteState.STALE if state.gr_enabled and r != RouteState.ABSENT
+            # RFC 4724 section 4.2: consecutive restarts must delete routes
+            # already stale; only freshly learned/refreshed routes survive.
+            routes = [RouteState.STALE if state.gr_enabled and r == RouteState.ACTIVE
                       else RouteState.ABSENT for r in routes]
         connected = False
     elif event == 'reconnect_f1':
@@ -82,3 +85,102 @@ def check_bounded_invariants(depth: int = 4) -> tuple[int, int]:
                         assert state.routes[1 - route] == prior.routes[1 - route]
                     visited.add(state)
     return explored, len(visited)
+
+
+@dataclass(frozen=True)
+class GrEvent:
+    kind: str
+    route: int = 0
+
+
+def enabled_events(state):
+    """Executable helper traces: packet events require an established session.
+
+    Timer expiry is scoped to a disconnected helper with retained routes.
+    Timer races after reconnect are outside this generated suite's model.
+    Global events have one canonical route index, avoiding duplicate edges.
+    """
+    if state.connected:
+        for route, status in enumerate(state.routes):
+            yield GrEvent('announce' if status == RouteState.ABSENT else 'refresh', route)
+        if any(state.present(i) for i in range(len(state.routes))):
+            yield GrEvent('disconnect')
+            yield GrEvent('notification')
+        if RouteState.STALE in state.routes:
+            yield GrEvent('eor')
+    else:
+        yield GrEvent('reconnect_f1')
+        if RouteState.STALE in state.routes:
+            yield GrEvent('reconnect_f0')
+            yield GrEvent('timer')
+
+
+def checked_step(state, event):
+    if event not in tuple(enabled_events(state)):
+        raise ValueError(f'event not enabled in GR state: {event}')
+    after = step(state, event.kind, event.route)
+    check_transition(state, event, after)
+    return after
+
+
+def check_transition(before, event, after):
+    """Check cleanup scope, retention, frame, and connection postconditions."""
+    if after.gr_enabled != before.gr_enabled:
+        raise AssertionError('negotiated GR mode changed')
+    expected_connected = (False if event.kind in ('disconnect', 'notification') else
+                          True if event.kind.startswith('reconnect_') else before.connected)
+    if after.connected != expected_connected:
+        raise AssertionError('incorrect session state')
+    for route, old in enumerate(before.routes):
+        actual = after.routes[route]
+        if event.kind in ('announce', 'refresh'):
+            expected = RouteState.ACTIVE if route == event.route else old
+        elif event.kind == 'notification' or (event.kind == 'disconnect' and not before.gr_enabled):
+            expected = RouteState.ABSENT
+        elif event.kind == 'disconnect':
+            expected = RouteState.STALE if old == RouteState.ACTIVE else RouteState.ABSENT
+        elif event.kind in ('eor', 'timer', 'reconnect_f0') and old == RouteState.STALE:
+            expected = RouteState.ABSENT
+        else:
+            expected = old
+        if actual != expected:
+            raise AssertionError('GR route retention/cleanup property failed')
+
+
+def gr_obligations(before, event, after):
+    tag = f'gr{int(before.gr_enabled)}/{event.kind}'
+    if event.kind in ('announce', 'refresh'):
+        tag += f'/route{event.route}/{before.routes[event.route].name.lower()}'
+    yield tag
+    if event.kind in ('eor', 'timer', 'reconnect_f0', 'notification', 'disconnect'):
+        yield tag + f'/active{before.routes.count(RouteState.ACTIVE)}/stale{before.routes.count(RouteState.STALE)}'
+
+
+def generate_traces():
+    """Explore only enabled edges to a fixed point and emit shortest witnesses.
+
+    The older bounded-walk API remains for historical tests. These unique
+    graph counts, unlike that walk's repeated execution count, describe the
+    legal event abstraction used by the new live executor.
+    """
+    witnesses = {}
+    states = edges = 0
+    for gr in (False, True):
+        initial = GrState.initial(gr)
+        paths = {initial: ()}
+        queue = deque([initial])
+        while queue:
+            before = queue.popleft()
+            for event in enabled_events(before):
+                after = checked_step(before, event)
+                edges += 1
+                trace = paths[before] + (event,)
+                for goal in gr_obligations(before, event, after):
+                    witnesses.setdefault(goal, (gr, trace))
+                if after not in paths:
+                    paths[after] = trace
+                    queue.append(after)
+        states += len(paths)
+    traces = list(dict.fromkeys(witnesses.values()))
+    return {'states': states, 'edges': edges, 'obligations': len(witnesses),
+            'traces': traces, 'witnesses': witnesses}

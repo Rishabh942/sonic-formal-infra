@@ -8,6 +8,8 @@ Suites
   opencap       OPEN capability fuzzing (RFC 5492) - fresh session per case.
   grrestart     Graceful Restart OPEN capability and End-of-RIB (RFC 4724).
   grstate       Stateful GR helper behavior: stale routes, refresh, timers.
+  grgenerated   Legal GR traces generated from the finite state model.
+  routecompetition  Packet-oracle + state-model parity in the combined lab.
 
 Harness correctness rules (fixed vs earlier revisions):
   * Wire/oracle sync: payloads are padded/truncated to the declared length
@@ -26,17 +28,16 @@ Usage (from repo root):
 
 import argparse
 
-import subprocess
+from models.bgpd.malformed_packets.frr_backend import FRR, configure
+
+
 def clear_bgp_log():
-    subprocess.call(["docker", "exec", "frr-lab", "sh", "-c", "> /tmp/bgpd.log"])
+    FRR.clear_log()
+
 
 def get_bgp_log():
-    try:
-        out = subprocess.check_output(["docker", "exec", "frr-lab", "cat", "/tmp/bgpd.log"], stderr=subprocess.DEVNULL)
-        lines = [l.split('] ')[-1].strip() for l in out.decode('utf-8').split('\n') if 'BGP:' in l and 'sockopt' not in l and 'TCP MD5' not in l and 'unrecognized capability' not in l]
-        return "\n".join(lines)
-    except Exception:
-        return ""
+    return FRR.log()
+
 
 import json
 import socket
@@ -51,7 +52,7 @@ from models.bgpd.malformed_packets.bgp_oracle import (
 from models.bgpd.malformed_packets.packet_builders import (
     encode_attr, normalize_payload, build_as_path_value,
     build_mp_reach_value, build_capability_value, wrap_capability,
-    CAP_CODES,
+    CAP_CODES, build_as4_path_attr,
 )
 from models.bgpd.malformed_packets.graceful_restart import (
     graceful_restart_cases, build_graceful_restart_open, IPV4_END_OF_RIB,
@@ -182,8 +183,7 @@ def build_aspath_update(args, prefix_id):
     ordered = [origin_obj, as_path_obj, next_hop_obj]
 
     if args["with_as4_path"]:
-        as4 = build_as_path_value(1, 1, 0, 0, True, 0)
-        ordered.append(BGPPathAttr(0xC0, 17, len(as4), as4))
+        ordered.append(build_as4_path_attr(True))
 
     attr_bytes = b''.join(_attr_wire(a) for a in ordered)
     pb, prefix_str = _prefix_bytes(prefix_id)
@@ -257,7 +257,8 @@ class BgpSession:
         s.settimeout(3.0)
         s.connect((self.host, self.port))
         try:
-            perform_bgp_handshake(s)
+            if not perform_bgp_handshake(s):
+                raise ConnectionError('BGP handshake incomplete')
         except Exception:
             s.close()
             raise
@@ -385,16 +386,8 @@ def send_update_and_monitor(s, update_bytes, fast=False):
 
 def check_if_route_installed(prefix, retries=2):
     for attempt in range(retries + 1):
-        try:
-            out = subprocess.check_output(
-                ["docker", "exec", FRR_CONTAINER, "vtysh", "-c",
-                 f"show ip bgp {prefix} json"],
-                stderr=subprocess.DEVNULL)
-            data = json.loads(out)
-            if data.get("paths"):
-                return True
-        except Exception:
-            pass
+        if FRR.paths(prefix):
+            return True
         if attempt < retries:
             time.sleep(0.12)
     return False
@@ -452,7 +445,7 @@ def expected_observations(oracle_res, install_observable):
 
 
 def summarize_and_report(tally, discrepancies, out_path, dry_run,
-                         coverage_mode=False, stateful_results=None):
+                         coverage_mode=False, stateful_results=None, suite_metadata=None):
     print("\n=======================================================================")
     print("                COMPREHENSIVE EMPIRICAL RESULTS SUMMARY                ")
     if dry_run:
@@ -467,13 +460,13 @@ def summarize_and_report(tally, discrepancies, out_path, dry_run,
     print("-" * 55)
     for key in ("VALID", "SESSION_RESET", "TREAT_AS_WITHDRAW",
                 "AFI_SAFI_DISABLE", "ATTRIBUTE_DISCARD", "IMPL_CHOICE",
-                "GR_STATEFUL"):
+                "GR_STATEFUL", "GR_GENERATED", "ROUTE_COMPETITION"):
         row = tally["MATRIX"].get(key)
         if row:
             print(f"{key:<28} | {row['TOTAL']:>7} | {row['PASS']:>7} | {row['FAIL']:>7}")
 
     print("\n--- Critical Metrics ---")
-    print(f"FRR Parser Crashes        : {tally['FRR_CRASH']}")
+    print(f"FRR Connection Failures   : {tally['FRR_CRASH']}")
     print("-----------------------------------------------------------------------")
     print(f"Unexpected Protocol Deviations: {len(discrepancies)}")
 
@@ -483,7 +476,7 @@ def summarize_and_report(tally, discrepancies, out_path, dry_run,
             if idx > 15:
                 print("... (truncated)")
                 break
-            if d.get('oracle_state') == 'GR_STATEFUL':
+            if d.get('oracle_state') in ('GR_STATEFUL', 'GR_GENERATED', 'ROUTE_COMPETITION'):
                 print(f"  - {d['test_id']} (stateful route check failed: "
                       f"{d.get('error') or d.get('checks')})")
             else:
@@ -496,8 +489,11 @@ def summarize_and_report(tally, discrepancies, out_path, dry_run,
             "deviations": len(discrepancies),
             "matrix": tally["MATRIX"],
             "dry_run": dry_run,
+            "coverage_mode": coverage_mode,
+            "connection_failures": tally["FRR_CRASH"],
         }, "discrepancies": discrepancies,
-        "stateful_results": stateful_results or []}, f, indent=2)
+        "stateful_results": stateful_results or [],
+        "suite_metadata": suite_metadata or {}}, f, indent=2)
 
 
 # ── Suite loading ────────────────────────────────────────────────────────────
@@ -523,7 +519,7 @@ def run_update_suite(cases, builder, oracle_eval, label, tally, discrepancies,
     """Generic runner for UPDATE-carrying suites. `builder(case, prefix_id)`
     returns (update_bytes, attrs_for_oracle, prefix_str|None, tag);
     `oracle_eval(attrs, case)` returns the ParseResult."""
-    total = min(len(cases), limit) if limit else len(cases)
+    total = min(len(cases), limit) if limit is not None else len(cases)
     print(f"\n[*] Running suite: {label} ({total} cases)")
     for i, args in enumerate(cases[:total]):
         if (i + 1) % 10 == 0 or (i + 1) == total:
@@ -569,7 +565,7 @@ def run_update_suite(cases, builder, oracle_eval, label, tally, discrepancies,
 def run_opencap_suite(cases, tally, discrepancies, host, port, dry_run, limit,
                       coverage_mode=False, builder=build_opencap_open,
                       label="opencap", send_eor=False):
-    total = min(len(cases), limit) if limit else len(cases)
+    total = min(len(cases), limit) if limit is not None else len(cases)
     print(f"\n[*] Running suite: {label} ({total} cases)")
     if not dry_run:
         time.sleep(1.5)              # let FRR drain dynamic-peer state first
@@ -657,25 +653,52 @@ SUITE_EVALS = {
                "mpreach": eval_mpreach}
 
 
+def record_stateful_results(label, oracle_state, results, tally, discrepancies,
+                            stateful_results, dry_run=False, coverage_mode=False):
+    """Use the parity report for both state models without counting dry runs as passes."""
+    row = tally['MATRIX'].setdefault(oracle_state, {'TOTAL': 0, 'PASS': 0, 'FAIL': 0})
+    for result in results:
+        stateful_results.append({'suite': label, **result})
+        row['TOTAL'] += 1
+        tally['TOTAL_EXECUTED'] += 1
+        if result.get('error') or result['pass'] is False:
+            row['FAIL'] += 1
+            discrepancies.append({'test_id': label + '-' + result['name'],
+                                  'oracle_state': oracle_state, **result,
+                                  'frr_log': '' if dry_run or coverage_mode else get_bgp_log()})
+        elif not (dry_run or coverage_mode):
+            row['PASS'] += 1
+
+
 def execute_comprehensive_suite(suite="all", host=DEFAULT_HOST, port=DEFAULT_PORT,
                                 limit=None, out_path=None, dry_run=False,
-                                coverage_mode=False, fail_on_deviation=False):
+                                coverage_mode=False, fail_on_deviation=False,
+                                lab_profile="legacy", route_baseline=False):
     tally = {"TOTAL_EXECUTED": 0, "FRR_CRASH": 0, "MATRIX": {}}
     discrepancies = []
     stateful_results = []
+    suite_metadata = {"lab_profile": lab_profile}
     out_path = out_path or f"{BASE_DIR}/parity_report_comprehensive.json"
 
-    want_all = suite in ("all", "all_no_gr")
+    want_all = suite in ("all", "all_no_gr", "all_existing")
     plan = {
         "legacy": want_all or suite == "legacy",
         "aspath": want_all or suite == "aspath",
         "mpreach": want_all or suite == "mpreach",
         "opencap": want_all or suite == "opencap",
         "routerefresh": want_all or suite == "routerefresh",
-        "grrestart": suite in ("all", "grrestart"),
-        "grstate": suite in ("all", "grstate"),
+        "grrestart": suite in ("all", "all_existing", "grrestart"),
+        "grstate": suite in ("all", "all_existing", "grstate"),
+        "grgenerated": suite in ("all", "generated", "grgenerated"),
+        "routecompetition": suite in ("routecompetition", "generated") or (
+            suite == "all" and lab_profile == "combined"),
     }
 
+    if plan["routecompetition"] and not dry_run and (lab_profile != "combined" or not FRR.local):
+        raise ValueError('routecompetition requires --lab-profile combined --frr-local; '
+                         'use run_route_lab.sh to provision the isolated topology')
+    if route_baseline and suite != "routecompetition":
+        raise ValueError('--route-baseline requires --suite routecompetition')
     session = None if dry_run else BgpSession(host, port)
     alloc = PrefixAllocator()
 
@@ -740,30 +763,29 @@ def execute_comprehensive_suite(suite="all", host=DEFAULT_HOST, port=DEFAULT_POR
                           limit, coverage_mode, builder=build_graceful_restart_open,
                           label="grrestart", send_eor=True)
 
+    if session is not None:
+        session.close()
     if plan["grstate"]:
         results = run_scenarios(host, port, limit, coverage_mode, dry_run)
-        stateful_results.extend(results)
-        row = tally["MATRIX"].setdefault("GR_STATEFUL",
-                                          {"TOTAL": 0, "PASS": 0, "FAIL": 0})
-        for result in results:
-            row["TOTAL"] += 1
-            tally["TOTAL_EXECUTED"] += 1
-            if dry_run or (coverage_mode and result["pass"]):
-                continue
-            if result["pass"]:
-                row["PASS"] += 1
-            else:
-                row["FAIL"] += 1
-                discrepancies.append({
-                    "test_id": "grstate-" + result["name"],
-                    "oracle_state": "GR_STATEFUL",
-                    "checks": result["checks"], "error": result["error"],
-                    "events": result["events"], "wire": result["wire"],
-                    "frr_log": get_bgp_log(),
-                })
+        record_stateful_results('grstate', 'GR_STATEFUL', results, tally,
+                                discrepancies, stateful_results, dry_run, coverage_mode)
+
+    if plan["grgenerated"]:
+        from models.bgpd.malformed_packets.gr_stateful import run_generated_scenarios
+        results, metadata = run_generated_scenarios(host, port, limit, coverage_mode, dry_run)
+        suite_metadata['grgenerated'] = metadata
+        record_stateful_results('grgenerated', 'GR_GENERATED', results, tally,
+                                discrepancies, stateful_results, dry_run, coverage_mode)
+
+    if plan["routecompetition"]:
+        from models.bgpd.malformed_packets.route_stateful import run_scenarios as run_routes
+        results, metadata = run_routes(host, port, limit, coverage_mode, dry_run, route_baseline)
+        suite_metadata['routecompetition'] = metadata
+        record_stateful_results('routecompetition', 'ROUTE_COMPETITION', results, tally,
+                                discrepancies, stateful_results, dry_run, coverage_mode)
 
     summarize_and_report(tally, discrepancies, out_path, dry_run,
-                         coverage_mode, stateful_results)
+                         coverage_mode, stateful_results, suite_metadata)
     if fail_on_deviation and (discrepancies or tally["FRR_CRASH"]):
         raise SystemExit(1)
     return discrepancies
@@ -778,18 +800,21 @@ def _interactive_menu():
     print("  5) Graceful Restart suite")
     print("  6) Stateful Graceful Restart suite")
     print("  7) All Suites")
+    print("  8) Model-generated Graceful Restart")
+    print("  9) Route competition (requires combined local lab)")
     try:
-        choice = input("Enter choice [1-7]: ").strip()
+        choice = input("Enter choice [1-9]: ").strip()
     except (EOFError, KeyboardInterrupt):
         choice = '7'
         print("7")
     return {"1": "legacy", "2": "aspath", "3": "mpreach", "4": "opencap",
-            "5": "grrestart", "6": "grstate"}.get(choice, "all")
+            "5": "grrestart", "6": "grstate", "8": "grgenerated",
+            "9": "routecompetition"}.get(choice, "all")
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="BGP RFC parity fuzzer")
-    ap.add_argument("--suite", choices=["all", "all_no_gr", "legacy", "aspath", "mpreach", "opencap", "routerefresh", "grrestart", "grstate"])
+    ap.add_argument("--suite", choices=["all", "all_no_gr", "all_existing", "generated", "legacy", "aspath", "mpreach", "opencap", "routerefresh", "grrestart", "grstate", "grgenerated", "routecompetition"])
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--limit", type=int, help="max cases per suite")
@@ -799,14 +824,23 @@ def main(argv=None):
                     help="exit nonzero on a parity deviation or failed FRR connection")
     ap.add_argument("--dry-run", action="store_true",
                     help="build packets + run oracle without touching a daemon")
+    ap.add_argument('--lab-profile', choices=['legacy', 'combined'], default='legacy')
+    ap.add_argument('--frr-local', action='store_true', help='observe FRR locally inside its container')
+    ap.add_argument('--frr-container', default='frr-lab')
+    ap.add_argument('--frr-log', default='/tmp/bgpd.log')
+    ap.add_argument('--route-baseline', action='store_true', help='single-advertiser control for routecompetition')
     ns = ap.parse_args(argv)
+    if ns.limit is not None and ns.limit < 0:
+        ap.error('--limit must be nonnegative')
+    configure(ns.frr_local, ns.frr_container, ns.frr_log)
 
     suite = ns.suite or _interactive_menu()
     execute_comprehensive_suite(suite=suite, host=ns.host, port=ns.port,
                                 limit=ns.limit, out_path=ns.out,
                                 dry_run=ns.dry_run,
                                 coverage_mode=ns.coverage_mode,
-                                fail_on_deviation=ns.fail_on_deviation)
+                                fail_on_deviation=ns.fail_on_deviation,
+                                lab_profile=ns.lab_profile, route_baseline=ns.route_baseline)
 
 
 if __name__ == "__main__":
