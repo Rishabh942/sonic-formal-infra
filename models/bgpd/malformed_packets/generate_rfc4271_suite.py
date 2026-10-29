@@ -1,4 +1,4 @@
-from models.bgpd.malformed_packets.bgp_oracle import parse_attributes, BGPPathAttr, ParseResult
+from models.bgpd.malformed_packets.bgp_oracle import parse_attributes, BGPPathAttr, ParseResult, UNMODELED_ASSIGNED_TYPES
 
 def test_attribute_sequence_extended(
     flags1: int, type1: int, len1: int,
@@ -13,6 +13,9 @@ def test_attribute_sequence_extended(
         
     # Bounding between 1 and 128 is an SMT-friendly constraint for all known types
     if not (1 <= type1 <= 128) or not (1 <= type2 <= 128) or not (1 <= type3 <= 128):
+        return "INVALID_INPUTS"
+    if (type1 in UNMODELED_ASSIGNED_TYPES or type2 in UNMODELED_ASSIGNED_TYPES
+            or type3 in UNMODELED_ASSIGNED_TYPES):
         return "INVALID_INPUTS"
         
     if not (0 <= len1 <= 12) or not (0 <= len2 <= 12) or not (0 <= len3 <= 12):

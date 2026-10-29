@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 from models.bgpd.malformed_packets import run_parity_fuzzer as runner
 from models.bgpd.malformed_packets.bgp_oracle import BGPPathAttr, ParseResult, parse_attributes
+from models.bgpd.malformed_packets.generate_rfc4271_suite import test_attribute_sequence_extended
 from models.bgpd.malformed_packets.generate_rfc7606_suite import test_attribute_sequence_soft
 from models.bgpd.malformed_packets.dummy_peer import build_open
 from models.bgpd.malformed_packets.testing.c_coverage import main as coverage_main, read_lcov
@@ -207,6 +208,24 @@ class CoreReleaseTests(unittest.TestCase):
             args = dict(flags1=64, len1=1, flags4=192, type4=8, len4=length)
             _, attrs, _, _ = runner.build_legacy_update(args, 2, 4, 1)
             self.assertEqual(test_attribute_sequence_soft(**args), runner.eval_legacy(attrs, args).name)
+
+    def test_unmodeled_assigned_types_are_excluded_from_symbolic_generators(self):
+        for type_code in (23, 25, 26, 29, 35, 39, 40):
+            with self.subTest(type_code=type_code):
+                self.assertEqual(
+                    test_attribute_sequence_soft(64, 1, 192, type_code, 4),
+                    "INVALID_INPUTS",
+                )
+                for codes in ((type_code, 8, 16), (8, type_code, 16),
+                              (8, 16, type_code)):
+                    self.assertEqual(
+                        test_attribute_sequence_extended(
+                            192, codes[0], 4, 192, codes[1], 4,
+                            192, codes[2], 8,
+                        ),
+                        "INVALID_INPUTS",
+                    )
+        self.assertEqual(test_attribute_sequence_soft(64, 1, 192, 127, 4), "VALID")
 
     def test_wire_mismatch_rejected(self):
         args = dict(flags4=192, type4=8, len4=4, payload_hex='00010203')

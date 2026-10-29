@@ -1,4 +1,4 @@
-from models.bgpd.malformed_packets.bgp_oracle import parse_attributes, BGPPathAttr
+from models.bgpd.malformed_packets.bgp_oracle import parse_attributes, BGPPathAttr, UNMODELED_ASSIGNED_TYPES
 
 def test_attribute_sequence_soft(
     flags1: int, len1: int,
@@ -9,7 +9,7 @@ def test_attribute_sequence_soft(
     if not (0 <= flags1 <= 255) or not (0 <= flags4 <= 255):
         return "INVALID_INPUTS"
         
-    if not (1 <= type4 <= 128):
+    if not (1 <= type4 <= 128) or type4 in UNMODELED_ASSIGNED_TYPES:
         return "INVALID_INPUTS"
         
     if not (0 <= len1 <= 12) or not (0 <= len4 <= 12):

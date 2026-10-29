@@ -8,6 +8,11 @@ from typing import List, Optional
 from dataclasses import dataclass
 from enum import IntEnum
 
+# These assigned path attributes have attribute-specific semantics that
+# this core oracle does not model. Symbolic entry points exclude them rather
+# than treating them as generic unknown attributes.
+UNMODELED_ASSIGNED_TYPES = (23, 25, 26, 29, 35, 39, 40)
+
 class ParseResult(IntEnum):
     # Numbered by severity (1 = most severe, 6 = least severe).
     # This enables using min() to keep the most severe error.

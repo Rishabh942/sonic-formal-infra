@@ -86,9 +86,13 @@ loaded with `ast.literal_eval`. Historical JSON files are not replay inputs.
 
 The original dictionaries expand into individual slot mutations around valid
 mandatory attributes; they are not full-sequence generator replay. The oracle
-models selected RFC rules, not every attribute value or NLRI semantic. Native
-IPv4 observations check BGP `paths`, not kernel forwarding. The core keeps the
-earlier flag-first handling; later peer-first oracle changes are deferred.
+models selected RFC rules, not every attribute value or NLRI semantic.
+Types 23, 25, 26, 29, 35, 39 and 40 are assigned path attributes whose
+semantics are not modeled here. The symbolic entry points exclude them instead
+of applying the generic unknown-attribute rule. One historical extended-suite
+packet uses type 23; its replay is not a test of type-23-specific semantics.
+Native IPv4 observations check BGP `paths`, not kernel forwarding. The core
+keeps the earlier flag-first handling; later peer-first changes are deferred.
 RFC precedence between eBGP attribute flags and peer-specific discard rules
 is still under review. Attribute-discard outcomes check route retention;
 AFI/SAFI-disable outcomes allow route absence or session reset. Per-attribute
