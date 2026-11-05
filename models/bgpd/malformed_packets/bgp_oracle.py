@@ -47,7 +47,35 @@ def keep_most_severe(new_result: ParseResult, current_result: ParseResult) -> Pa
     """
     return min(new_result, current_result)
 
-def parse_attributes(attrs: List[BGPPathAttr], is_ibgp: bool = False, impl_choice: Optional[ImplChoice] = None, asn_4byte: bool = False) -> ParseResult:
+def scan_as_path(value: bytes, asn_size: int,
+                 first_as: Optional[int] = None) -> bool:
+    """Check segment framing and the lab's optional eBGP first-AS policy.
+
+    This lab is not a confederation, so only AS_SET and AS_SEQUENCE are legal.
+    An empty AS_PATH is syntactically valid; first-AS policy rejects it.
+    """
+    if first_as is not None:
+        if (len(value) < 2 + asn_size or value[0] != 2 or value[1] == 0
+                or int.from_bytes(value[2:2 + asn_size], 'big') != first_as):
+            return False
+    idx = 0
+    while idx < len(value):
+        if idx + 2 > len(value):
+            return False
+        seg_type, seg_count = value[idx], value[idx + 1]
+        idx += 2
+        if seg_type not in (1, 2) or seg_count == 0:
+            return False
+        idx += seg_count * asn_size
+        if idx > len(value):
+            return False
+    return True
+
+
+def parse_attributes(attrs: List[BGPPathAttr], is_ibgp: bool = False,
+                     impl_choice: Optional[ImplChoice] = None,
+                     asn_4byte: bool = False,
+                     enforce_first_as: Optional[int] = None) -> ParseResult:
     """Evaluate selected UPDATE rules. asn_4byte follows session negotiation.
 
     value=None selects the legacy length-only model; concrete payloads
@@ -88,20 +116,9 @@ def parse_attributes(attrs: List[BGPPathAttr], is_ibgp: bool = False, impl_choic
             seen_as_path = True
             if is_optional or not is_transitive:
                 final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
-            elif attr.value is not None:
-                # Basic framing check for AS_PATH
-                idx = 0
-                while idx < len(attr.value):
-                    if idx + 1 >= len(attr.value):
-                        final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
-                        break
-                    seg_type = attr.value[idx]
-                    seg_len = attr.value[idx+1]
-                    if seg_type not in (1, 2) or seg_len == 0 or idx + 2 + seg_len * (4 if asn_4byte else 2) > len(attr.value):
-                        # RFC 7606 §7.2: invalid type, zero count or truncated ASNs.
-                        final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
-                        break
-                    idx += 2 + seg_len * (4 if asn_4byte else 2)
+            elif attr.value is not None and not scan_as_path(
+                    attr.value, 4 if asn_4byte else 2, enforce_first_as):
+                final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
         elif attr.type_code == 3: # NEXT_HOP
             seen_nexthop = True
             if is_optional or not is_transitive or attr.length != 4:
@@ -153,6 +170,9 @@ def parse_attributes(attrs: List[BGPPathAttr], is_ibgp: bool = False, impl_choic
         elif attr.type_code == 17: # AS4_PATH
             if not is_optional or not is_transitive:
                 final_result = keep_most_severe(ParseResult.TREAT_AS_WITHDRAW, final_result)
+            elif attr.value is not None and not scan_as_path(attr.value, 4):
+                # RFC 6793 section 5: malformed AS4_PATH is treated as absent.
+                final_result = keep_most_severe(ParseResult.ATTRIBUTE_DISCARD, final_result)
         elif attr.type_code == 18: # AS4_AGGREGATOR
             if not is_optional or not is_transitive or attr.length != 8:
                 final_result = keep_most_severe(ParseResult.ATTRIBUTE_DISCARD, final_result)

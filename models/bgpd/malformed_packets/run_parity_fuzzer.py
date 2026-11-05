@@ -16,7 +16,9 @@ import subprocess
 import time
 
 from models.bgpd.malformed_packets.bgp_oracle import parse_attributes, BGPPathAttr, ParseResult
-from models.bgpd.malformed_packets.packet_builders import encode_attr, normalize_payload
+from models.bgpd.malformed_packets.packet_builders import (
+    build_as4_path_attr, build_as_path_value, encode_attr, normalize_payload,
+)
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -172,6 +174,23 @@ def build_legacy_update(args, version, slot, prefix_id):
     update_bytes = b'\xff' * 16 + struct.pack('!HB', update_len, 2) + b'\x00\x00' \
         + struct.pack('!H', len(attr_bytes)) + attr_bytes + pb
     return update_bytes, attrs_for_oracle, prefix_str, f"v{version}slot{slot}"
+
+
+def build_aspath_update(args, prefix_id):
+    """Replace the mandatory AS_PATH with a bounded structural value."""
+    value = build_as_path_value(args['seg1_type'], args['seg1_count'],
+                                args['seg2_type'], args['seg2_count'],
+                                args['extra_len'])
+    origin, _, next_hop = _mandatory_attrs()
+    attrs = [origin, BGPPathAttr(64, 2, len(value), value), next_hop]
+    if args['with_as4_path']:
+        attrs.append(build_as4_path_attr())
+    attr_bytes = b''.join(_attr_wire(attr) for attr in attrs)
+    prefix, prefix_str = _prefix_bytes(prefix_id)
+    packet_len = 23 + len(attr_bytes) + len(prefix)
+    packet = (b'\xff' * 16 + struct.pack('!HB', packet_len, 2) + b'\x00\x00'
+              + struct.pack('!H', len(attr_bytes)) + attr_bytes + prefix)
+    return packet, attrs, prefix_str, 'asn4'
 
 def expand_legacy_cases(raw_cases):
     """Expand legacy dicts across their slot positions exactly like the
@@ -482,18 +501,23 @@ def eval_legacy(attrs, args):
     # The OPEN advertises AS4; concrete AS_PATH payloads use four-byte ASNs.
     return parse_attributes(attrs, asn_4byte=True)
 
+
+def eval_aspath(attrs, args):
+    return parse_attributes(attrs, asn_4byte=True, enforce_first_as=65002)
+
 CORPUS_FILES = {
     "extended": "attr_argdict_extended.txt",
     "soft": "attr_argdict_soft.txt",
     "semantic": "attr_argdict_semantic.txt",
 }
+ASPATH_FILE = "aspath_argdict.txt"
 
 
 def execute_comprehensive_suite(suite="all", host=DEFAULT_HOST, port=DEFAULT_PORT,
                                 limit=None, out_path=None, dry_run=False,
                                 coverage_mode=False, fail_on_deviation=False,
                                 container=FRR_CONTAINER):
-    if suite not in ("all", *CORPUS_FILES):
+    if suite not in ("all", *CORPUS_FILES, "aspath"):
         raise ValueError(f"unknown suite: {suite}")
     if limit is not None and limit < 0:
         raise ValueError("limit must be nonnegative")
@@ -524,6 +548,14 @@ def execute_comprehensive_suite(suite="all", host=DEFAULT_HOST, port=DEFAULT_POR
             run_update_suite(expand_legacy_cases(raw), builder, oracle, label,
                              tally, discrepancies, alloc, session, dry_run, limit,
                              coverage_mode, container)
+        if suite in ("all", "aspath"):
+            path = BASE_DIR / "tests" / ASPATH_FILE
+            cases = load_argdict(path)
+            corpus[ASPATH_FILE] = {"rows": len(cases),
+                                   "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            run_update_suite(cases, build_aspath_update, eval_aspath, "aspath",
+                             tally, discrepancies, alloc, session, dry_run, limit,
+                             coverage_mode, container)
     finally:
         if session is not None:
             session.close()
@@ -538,7 +570,7 @@ def execute_comprehensive_suite(suite="all", host=DEFAULT_HOST, port=DEFAULT_POR
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Core BGP UPDATE parity fuzzer")
-    ap.add_argument("--suite", choices=["all", *CORPUS_FILES], default="all")
+    ap.add_argument("--suite", choices=["all", *CORPUS_FILES, "aspath"], default="all")
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--container", default=FRR_CONTAINER,

@@ -38,9 +38,9 @@ class CoreReleaseTests(unittest.TestCase):
             runner.execute_comprehensive_suite(dry_run=True, limit=1, out_path=out,
                                                fail_on_deviation=True)
             report = json.loads(out.read_text())['summary']
-            self.assertEqual(report['total'], 3)
+            self.assertEqual(report['total'], 4)
             self.assertEqual(sum(r['PASS'] for r in report['matrix'].values()), 0)
-            self.assertEqual(len(report['corpus']), 3)
+            self.assertEqual(len(report['corpus']), 4)
             runner.execute_comprehensive_suite(dry_run=True, limit=0, out_path=out)
             self.assertEqual(json.loads(out.read_text())['summary']['total'], 0)
 
@@ -62,7 +62,7 @@ class CoreReleaseTests(unittest.TestCase):
             runner.execute_comprehensive_suite(coverage_mode=True, limit=1, out_path=out,
                                                fail_on_deviation=True)
             summary = json.loads(out.read_text())['summary']
-            self.assertEqual(summary['total'], 3)
+            self.assertEqual(summary['total'], 4)
             self.assertTrue(summary['coverage_mode'])
             self.assertEqual(sum(r['PASS'] for r in summary['matrix'].values()), 0)
 
@@ -161,6 +161,15 @@ class CoreReleaseTests(unittest.TestCase):
                     coverage_main(options[:-1] + ['different-revision'])
             self.assertEqual(failure.exception.code, 1)
             self.assertIn('no comparable coverage delta', err.getvalue())
+            changed = json.loads(parity.read_text())
+            changed['summary']['corpus'] = {'aspath_argdict.txt':
+                                            {'rows': 1, 'sha256': 'changed'}}
+            parity.write_text(json.dumps(changed))
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as failure:
+                    coverage_main(options)
+            self.assertEqual(failure.exception.code, 1)
+            self.assertIn('corpus', err.getvalue())
 
     def test_lcov_missing_or_duplicate_records_fail_closed(self):
         text = 'SF:/frr/bgpd/bgp_attr.c\nLF:10\nLH:5\nBRF:8\nBRH:3\nFNF:2\nFNH:1\nend_of_record\n'

@@ -1,8 +1,8 @@
 # BGP UPDATE attribute tests
 
-Core release of the malformed-packet fuzzer from PR #3, using the August 20
-feature scope. It tests extended path attributes, soft faults and community
-payloads against an executable RFC oracle. Later standalone AS_PATH, MP_REACH,
+The malformed UPDATE core from PR #8 tests extended path attributes, soft
+faults and community payloads against an executable RFC oracle. This draft
+adds bounded AS_PATH/AS4_PATH structure in four-byte-ASN sessions. MP_REACH,
 OPEN, Route Refresh and stateful GR/route suites are outside this cut.
 
 Requires **Python 3.10+**. Live tests require **Docker with Linux containers**.
@@ -12,7 +12,8 @@ working directory and support `--help`.
 ## Offline check
 
 ```bash
-python3 -m unittest models.bgpd.malformed_packets.testing.test_core_release models.bgpd.malformed_packets.testing.test_scripts
+python3 -m unittest models.bgpd.malformed_packets.testing.test_core_release models.bgpd.malformed_packets.testing.test_scripts models.bgpd.malformed_packets.testing.test_aspath_release
+python3 -m models.bgpd.malformed_packets.seed_aspath_suite
 python3 -m models.bgpd.malformed_packets.run_parity_fuzzer \
   --dry-run --fail-on-deviation --out /tmp/bgp-core-dry.json
 ```
@@ -35,7 +36,7 @@ The container receives `NET_ADMIN` and `SYS_ADMIN`. An existing container is
 preserved unless you pass `--replace`.
 
 Omit `--limit` to replay the full corpus. It caps packet mutations **per suite**.
-`--suite` accepts `all` (default), `extended`, `soft`, or `semantic`.
+`--suite` accepts `all` (default), `extended`, `soft`, `semantic`, or `aspath`.
 `--fail-on-deviation` returns nonzero for unexpected daemon behavior or harness
 errors. Reports distinguish route presence, notified session reset, unnotified
 disconnect and route absence; an unsent UPDATE is a harness error.
@@ -44,6 +45,21 @@ a mismatch needs packet/RFC analysis before being reported as an FRR bug.
 For a separate lab, pass `--container bgp-test --port 11790` to setup and the
 fuzzer. Stop it with `docker stop bgp-test`; remove it with `docker rm bgp-test`.
 The historical `setup_frr_legacy.sh` selects FRR 7.5.
+
+## AS_PATH draft cut
+
+`generate_aspath_suite.py` bounds two segment types and counts, optional
+AS4_PATH, and a small value-length adjustment. The seed command above checks
+all 8,750 bounded inputs for generator/wire/oracle agreement, then checks the
+saved 153-case sample. To regenerate that sample, run the same command with
+`--write`. The saved cases are Python literal dictionaries like the core
+corpus. Both the generator and replay call `parse_attributes` with the lab's
+four-byte ASN negotiation and first-AS policy.
+
+To replay only this suite, add `--suite aspath` to the live command above.
+The default `all` run includes it. Two-byte-ASN sessions need a separate peer
+that does not negotiate AS4; this draft makes no live claim about them. A dry
+run checks packet construction and model results, not FRR behavior.
 
 ## C coverage
 
@@ -64,18 +80,19 @@ records injections without assigning parity passes.
 Results under `models/bgpd/malformed_packets/coverage_html_c/` include HTML,
 raw `target.info`, `summary.json`, injection `parity.json` and `baseline.json`.
 The four measured files are `bgp_attr.c`, `bgp_open.c`, `bgp_packet.c` and
-`bgp_route.c`. Comparisons require matching FRR revisions, counter scope, limits
-and denominators. The collector accepts `--container`, `--port`, `--limit`,
+`bgp_route.c`. Comparisons require matching FRR revisions, counter scope, limits,
+corpus hashes and denominators. The collector accepts `--container`, `--port`, `--limit`,
 and `--out DIR`. Small changes between captures can reflect scheduling.
-To cover all 2,344 saved packets, use `--limit 2000` on both collector calls.
+To cover all 2,497 saved packets, use `--limit 2000` on both collector calls.
 
 ## Model and arguments
 
 `bgp_oracle.py` retains the earlier flag/length/duplicate rules and adds
 payload-aware AS_PATH framing with the negotiated ASN width. The runner uses
 the same oracle and checks decoded UPDATE attributes against its model inputs.
-`generate_rfc4271_suite.py`, `generate_rfc7606_suite.py` and
-`testing/generate_semantic_suite.py` retain the core model entry points.
+`generate_rfc4271_suite.py`, `generate_rfc7606_suite.py`,
+`testing/generate_semantic_suite.py` and `generate_aspath_suite.py` are the
+model entry points in this cut.
 
 For example, `flags4=192`, `type4=8`, `len4=4` and
 `payload_hex='00010203'` produce a COMMUNITY attribute:
