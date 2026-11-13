@@ -7,7 +7,8 @@ import unittest
 
 BASE = Path(__file__).resolve().parents[1]
 SCRIPTS = ('setup_frr_container.sh', 'setup_frr_coverage.sh',
-           'setup_frr_legacy.sh', 'collect_c_coverage.sh')
+           'setup_frr_legacy.sh', 'collect_c_coverage.sh',
+           'run_release_check.sh')
 
 
 class ScriptTests(unittest.TestCase):

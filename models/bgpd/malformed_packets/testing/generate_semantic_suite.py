@@ -63,7 +63,8 @@ def generate_semantic_communities():
             "payload_hex": p
         })
         
-    # Edge Cases: Incorrect Lengths (Truncated payloads)
+    # Payload normalization cases: the builder pads or truncates these to
+    # the declared length, so they are valid wire attributes.
     suite.append({
         "flags4": 0xC0,
         "type4": 16,
@@ -77,6 +78,27 @@ def generate_semantic_communities():
         "len4": 4,          # Claims 4 bytes
         "payload_hex": "0000000000000000" # Provides 8 bytes
     })
+
+    # Concrete malformed values and lengths that survive wire normalization.
+    suite.extend([
+        {"flags1": 0x40, "len1": 1, "payload_hex1": "03"},
+        {"flags4": 0x40, "type4": 5, "len4": 0},
+        {"flags4": 0x80, "type4": 9, "len4": 0},
+        {"flags4": 0x80, "type4": 10, "len4": 1},
+        {"flags4": 0xC0, "type4": 8, "len4": 3,
+         "payload_hex": "010203"},
+        {"flags4": 0xC0, "type4": 16, "len4": 7,
+         "payload_hex": "00000000000000"},
+        # RFC 6793: these companions are discarded on four-byte-ASN peers.
+        {"flags4": 0xC0, "type4": 17, "len4": 6,
+         "payload_hex": "02010000FDEA"},
+        {"flags4": 0xC0, "type4": 18, "len4": 8,
+         "payload_hex": "0000FDEA01010101"},
+        # RFC 8092: Large Community length is a nonzero multiple of 12.
+        {"flags4": 0xC0, "type4": 32, "len4": 0},
+        {"flags4": 0xC0, "type4": 32, "len4": 11,
+         "payload_hex": "0000000000000000000000"},
+    ])
 
     out_path = "models/bgpd/malformed_packets/tests/attr_argdict_semantic.txt"
     with open(out_path, "w") as f:

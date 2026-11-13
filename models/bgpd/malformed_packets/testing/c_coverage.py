@@ -33,6 +33,8 @@ def read_lcov(text):
 
 def signature(snapshot):
     return (snapshot['frr_revision'], snapshot['limit'], snapshot.get('counter_scope'),
+            tuple(sorted((name, entry['rows'], entry['sha256'])
+                         for name, entry in snapshot['corpus'].items())),
             [(r['name'], r['lf'], r['bf'], r['fn']) for r in snapshot['files']])
 
 
@@ -72,7 +74,7 @@ def main(argv=None):
         elif baseline.exists():
             old = json.loads(baseline.read_text())
             if signature(old) != signature(snap):
-                raise ValueError('baseline build, scope, case limit or denominators differ; no comparable coverage delta')
+                raise ValueError('baseline build, scope, case limit, corpus or denominators differ; no comparable coverage delta')
             changes = []
             for label, hit, found in (('lines', 'lh', 'lf'), ('branches', 'bh', 'bf'), ('functions', 'fh', 'fn')):
                 delta = percent(total[hit], total[found]) - percent(old['total'][hit], old['total'][found])
