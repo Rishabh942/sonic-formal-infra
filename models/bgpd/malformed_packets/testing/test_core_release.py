@@ -38,9 +38,11 @@ class CoreReleaseTests(unittest.TestCase):
             runner.execute_comprehensive_suite(dry_run=True, limit=1, out_path=out,
                                                fail_on_deviation=True)
             report = json.loads(out.read_text())['summary']
-            self.assertEqual(report['total'], 3)
+            self.assertEqual(report['total'], 4)
+            self.assertGreater(report['distinct_attribute_sequences'], 0)
             self.assertEqual(sum(r['PASS'] for r in report['matrix'].values()), 0)
-            self.assertEqual(len(report['corpus']), 3)
+            self.assertTrue(all(not r['OBSERVED'] for r in report['matrix'].values()))
+            self.assertEqual(len(report['corpus']), 4)
             runner.execute_comprehensive_suite(dry_run=True, limit=0, out_path=out)
             self.assertEqual(json.loads(out.read_text())['summary']['total'], 0)
 
@@ -62,7 +64,7 @@ class CoreReleaseTests(unittest.TestCase):
             runner.execute_comprehensive_suite(coverage_mode=True, limit=1, out_path=out,
                                                fail_on_deviation=True)
             summary = json.loads(out.read_text())['summary']
-            self.assertEqual(summary['total'], 3)
+            self.assertEqual(summary['total'], 4)
             self.assertTrue(summary['coverage_mode'])
             self.assertEqual(sum(r['PASS'] for r in summary['matrix'].values()), 0)
 
@@ -100,6 +102,16 @@ class CoreReleaseTests(unittest.TestCase):
                          runner.OBS_DISCONNECTED)
         self.assertEqual(runner.classify_observation(True, False, False),
                          runner.OBS_RESET)
+
+    def test_live_matrix_retains_actual_observations(self):
+        tally = {'TOTAL_EXECUTED': 0, 'MATRIX': {}}
+        discrepancies = []
+        for observed in (runner.OBS_RESET, runner.OBS_NOT_INSTALLED):
+            runner.evaluate_case('afi-example', ParseResult.AFI_SAFI_DISABLE,
+                                 observed, {}, tally, discrepancies)
+        self.assertEqual(tally['MATRIX']['AFI_SAFI_DISABLE']['OBSERVED'],
+                         {runner.OBS_RESET: 1, runner.OBS_NOT_INSTALLED: 1})
+        self.assertEqual(tally['MATRIX']['AFI_SAFI_DISABLE']['PASS'], 2)
 
     def test_fragmented_handshake_and_notification(self):
         peer_open = runner.build_bgp_open(asn=65001)
@@ -161,6 +173,15 @@ class CoreReleaseTests(unittest.TestCase):
                     coverage_main(options[:-1] + ['different-revision'])
             self.assertEqual(failure.exception.code, 1)
             self.assertIn('no comparable coverage delta', err.getvalue())
+            changed = json.loads(parity.read_text())
+            changed['summary']['corpus'] = {'aspath_argdict.txt':
+                                            {'rows': 1, 'sha256': 'changed'}}
+            parity.write_text(json.dumps(changed))
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as failure:
+                    coverage_main(options)
+            self.assertEqual(failure.exception.code, 1)
+            self.assertIn('corpus', err.getvalue())
 
     def test_lcov_missing_or_duplicate_records_fail_closed(self):
         text = 'SF:/frr/bgpd/bgp_attr.c\nLF:10\nLH:5\nBRF:8\nBRH:3\nFNF:2\nFNH:1\nend_of_record\n'
@@ -177,7 +198,7 @@ class CoreReleaseTests(unittest.TestCase):
                 packet, attrs, _, _ = runner.build_legacy_update(args, version, slot, total)
                 runner.validate_update_attributes(packet, attrs)
                 runner.eval_legacy(attrs, args)
-        self.assertEqual(total, 2344)
+        self.assertEqual(total, 2354)
 
     def test_as_path_uses_negotiated_asn_width(self):
         for payload, width, expected in (
@@ -201,6 +222,62 @@ class CoreReleaseTests(unittest.TestCase):
                      BGPPathAttr(192, 16, length, b'\x00' * length)]
             with self.subTest(length=length):
                 self.assertEqual(parse_attributes(attrs, asn_4byte=True), expected)
+
+    def test_large_community_length_must_be_nonzero_multiple_of_twelve(self):
+        for length, expected in ((0, ParseResult.TREAT_AS_WITHDRAW),
+                                 (11, ParseResult.TREAT_AS_WITHDRAW),
+                                 (12, ParseResult.VALID)):
+            attrs = [*runner._mandatory_attrs(),
+                     BGPPathAttr(192, 32, length, b'\x00' * length)]
+            with self.subTest(length=length):
+                self.assertEqual(parse_attributes(attrs, asn_4byte=True), expected)
+
+    def test_origin_value_is_checked_when_payload_is_concrete(self):
+        for value, expected in ((0, ParseResult.VALID), (1, ParseResult.VALID),
+                                (2, ParseResult.VALID), (3, ParseResult.TREAT_AS_WITHDRAW)):
+            attrs = [BGPPathAttr(64, 1, 1, bytes([value])),
+                     *runner._mandatory_attrs()[1:]]
+            with self.subTest(value=value):
+                self.assertEqual(parse_attributes(attrs, asn_4byte=True), expected)
+
+    def test_as4_companions_are_discarded_after_four_byte_negotiation(self):
+        mandatory = [BGPPathAttr(64, 1, 1), BGPPathAttr(64, 2, 4),
+                     BGPPathAttr(64, 3, 4)]
+        for code, value in ((17, b'\x02\x01\x00\x00\xfd\xea'),
+                            (18, b'\x00\x00\xfd\xea\x01\x01\x01\x01')):
+            attrs = [*mandatory, BGPPathAttr(192, code, len(value), value)]
+            with self.subTest(code=code):
+                self.assertEqual(parse_attributes(attrs, asn_4byte=True),
+                                 ParseResult.ATTRIBUTE_DISCARD)
+                self.assertEqual(parse_attributes(attrs, asn_4byte=False),
+                                 ParseResult.VALID)
+        empty_as4 = [*mandatory, BGPPathAttr(192, 17, 0, b'')]
+        self.assertEqual(parse_attributes(empty_as4, asn_4byte=False),
+                         ParseResult.ATTRIBUTE_DISCARD)
+
+    def test_ebgp_peer_discard_precedes_attribute_length(self):
+        for code, flags, bad_length, good_length in ((5, 64, 0, 4),
+                                                      (9, 128, 0, 4),
+                                                      (10, 128, 1, 4)):
+            for length in (bad_length, good_length):
+                attrs = [*runner._mandatory_attrs(),
+                         BGPPathAttr(flags, code, length, bytes(length))]
+                with self.subTest(code=code, length=length):
+                    self.assertEqual(parse_attributes(attrs, is_ibgp=False,
+                                                      asn_4byte=True),
+                                     ParseResult.ATTRIBUTE_DISCARD)
+                    self.assertEqual(parse_attributes(attrs, is_ibgp=True,
+                                                      asn_4byte=True),
+                                     ParseResult.TREAT_AS_WITHDRAW if length == bad_length
+                                     else ParseResult.VALID)
+            invalid_flags = [*runner._mandatory_attrs(),
+                             BGPPathAttr(0, code, bad_length, bytes(bad_length))]
+            self.assertEqual(parse_attributes(invalid_flags, is_ibgp=False,
+                                              asn_4byte=True),
+                             ParseResult.TREAT_AS_WITHDRAW)
+        empty_cluster = [*runner._mandatory_attrs(), BGPPathAttr(128, 10, 0, b'')]
+        self.assertEqual(parse_attributes(empty_cluster, is_ibgp=True,
+                                          asn_4byte=True), ParseResult.TREAT_AS_WITHDRAW)
 
     def test_generator_and_slot_replay_share_core_rules(self):
         # Keep ORIGIN valid and isolate the fourth attribute's length rule.
